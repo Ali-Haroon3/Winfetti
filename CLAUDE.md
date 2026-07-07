@@ -1,0 +1,46 @@
+# Winfetti API
+
+Server-authoritative rewards backend. Full product spec in `SPEC.md` — read it
+before changing anything about coins, caps, or redemptions.
+
+## Core principle
+
+The phone is a view, the server is the truth. Every coin is a row in the
+append-only `ledger` table, written under `SELECT ... FOR UPDATE` on the user
+row with a unique `idem_key`. `users.balance` is a maintained column updated in
+the same transaction. Never write a balance without going through
+`app/ledger.py`.
+
+## Layout
+
+- `app/ledger.py` — the only way coins move; idempotency + row locking
+- `app/services.py` — game claims (caps/multipliers), check-in streaks, redemption lifecycle
+- `app/payouts.py` — server-owned payout tables, check-in rewards, redemption catalog
+- `app/routes/`, `app/admin/` — HTTP layer; routes commit, services lock
+- `app/webhooks/` — Phase 2 (AdMob SSV, offerwalls, RevenueCat, Stripe)
+- `app/fulfillment.py` — Tremendous behind a Protocol; stub used when no API key
+- `app/clock.py` — the server clock seam; never call `datetime.now()` elsewhere
+
+## Commands
+
+```bash
+# run everything
+docker compose up
+
+# local dev
+pip install -r requirements-dev.txt
+alembic upgrade head
+uvicorn app.main:app --reload
+
+# tests (need a local Postgres; see tests/conftest.py for the URL)
+pytest
+```
+
+## Conventions
+
+- Tests hit a real Postgres — the concurrency tests in `tests/test_ledger.py`
+  are the contract; keep them passing before anything else.
+- New credit paths: verify a third-party signature or hard-cap the amount.
+  There is no third option.
+- All time-based rules read `app/clock.py` (never client timestamps).
+- Schema changes go through Alembic (`alembic revision --autogenerate`).
