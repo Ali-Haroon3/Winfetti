@@ -42,3 +42,52 @@ def test_disabled_account_rejected(client, db):
 def test_short_device_id_rejected(client, db):
     resp = client.post("/v1/auth/device", json={"device_id": "short"})
     assert resp.status_code == 422
+
+
+def _request_with(headers: dict, client_host: str = "10.0.0.1"):
+    from starlette.requests import Request
+
+    scope = {
+        "type": "http",
+        "method": "GET",
+        "path": "/",
+        "query_string": b"",
+        "headers": [(k.lower().encode(), v.encode()) for k, v in headers.items()],
+        "client": (client_host, 1234),
+    }
+    return Request(scope)
+
+
+def test_client_ip_takes_rightmost_forwarded_entry():
+    """The edge proxy appends the real client; anything the client forged
+    sits to the left. Spoofing must not shard the per-IP rate limit."""
+    from app.auth import client_ip
+
+    req = _request_with({"x-forwarded-for": "6.6.6.6, 1.2.3.4"})
+    assert client_ip(req) == "1.2.3.4"
+    assert client_ip(_request_with({})) == "10.0.0.1"
+
+
+def test_client_ip_ignores_header_when_proxy_untrusted():
+    from app.auth import client_ip
+    from app.config import get_settings
+
+    get_settings().trust_proxy_headers = False
+    try:
+        req = _request_with({"x-forwarded-for": "6.6.6.6"})
+        assert client_ip(req) == "10.0.0.1"
+    finally:
+        get_settings().trust_proxy_headers = True
+
+
+def test_auth_denials_logged_to_fraud_events(client, db):
+    from sqlalchemy import select as sa_select
+
+    from app.models import FraudEvent
+
+    client.get("/v1/me", headers={"Authorization": "Bearer garbage"})
+    kinds = [
+        e.kind
+        for e in db.execute(sa_select(FraudEvent)).scalars().all()
+    ]
+    assert "auth_denied:invalid_token" in kinds

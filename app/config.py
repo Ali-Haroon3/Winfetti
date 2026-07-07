@@ -38,6 +38,9 @@ class Settings(BaseSettings):
     redemption_min_verified_ad_receipts: int = 10
     auto_approve_after_n_approved: int = 2
     auto_approve_max_usd: float = 10.0
+    # POST /v1/redemptions has no idem_key; the cooldown stops a network
+    # retry from creating (and possibly auto-shipping) a second order.
+    redemption_cooldown_seconds: int = 60
 
     # Rate limits (Redis fixed window, per minute).
     rate_limit_enabled: bool = True
@@ -45,6 +48,10 @@ class Settings(BaseSettings):
     rate_limit_auth_per_ip_per_min: int = 5
     # If Redis is down, allow requests through rather than hard-failing.
     rate_limit_fail_open: bool = True
+    # True when running behind exactly one edge proxy that appends the real
+    # client IP to X-Forwarded-For (Fly/Railway). Set false if the app is
+    # exposed directly, or the header becomes client-spoofable.
+    trust_proxy_headers: bool = True
 
 
 @lru_cache

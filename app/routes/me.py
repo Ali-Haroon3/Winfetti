@@ -26,7 +26,9 @@ def me(user: User = Depends(get_current_user), db: Session = Depends(get_db)):
             game_win_credited_today=ledger.credited_since(
                 db, user.id, day_start, kinds=["game_win"]
             ),
-            total_credited_today=ledger.credited_since(db, user.id, day_start),
+            total_credited_today=ledger.credited_since(
+                db, user.id, day_start, kinds=ledger.EARNING_KINDS
+            ),
             daily_game_win_cap=settings.daily_game_win_cap,
             daily_total_credit_cap=settings.daily_total_credit_cap,
             checkin_streak=user.checkin_streak,

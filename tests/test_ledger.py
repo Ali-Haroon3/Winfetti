@@ -4,8 +4,6 @@
 2. Debits are atomic: concurrent spends can never drive a balance negative.
 """
 
-import threading
-
 import pytest
 from sqlalchemy import func, select
 
@@ -13,28 +11,9 @@ from app import ledger
 from app.db import SessionLocal
 from app.ledger import InsufficientBalance
 from app.models import LedgerEntry, User
-from tests.conftest import make_user
+from tests.conftest import make_user, run_threads as _run_threads
 
 N_THREADS = 12
-
-
-def _run_threads(n, target):
-    barrier = threading.Barrier(n)
-    errors = []
-
-    def wrapped(i):
-        try:
-            barrier.wait(timeout=10)
-            target(i)
-        except Exception as exc:  # noqa: BLE001 - collected and asserted on
-            errors.append(exc)
-
-    threads = [threading.Thread(target=wrapped, args=(i,)) for i in range(n)]
-    for t in threads:
-        t.start()
-    for t in threads:
-        t.join(timeout=30)
-    return errors
 
 
 def test_credit_updates_balance_and_ledger(db):
@@ -156,6 +135,34 @@ def test_concurrent_debits_never_go_negative(db):
         ).scalar_one()
     assert balance == 0
     assert min_after >= 0, "a debit drove the running balance negative"
+
+
+def test_lock_user_refreshes_stale_identity_map(db):
+    """Regression: the request session loads the User during auth (plain
+    SELECT), then another transaction moves the balance. lock_user must
+    refresh the instance — without populate_existing the FOR UPDATE query
+    returns the stale identity-map object and the balance math corrupts."""
+    user = make_user(db)
+    assert user.balance == 0  # user is now cached in db's identity map
+
+    with SessionLocal() as other:
+        ledger.apply_by_id(other, user.id, 100, "game_win", "other-session-credit")
+        other.commit()
+
+    result = ledger.apply_by_id(db, user.id, 50, "game_win", "stale-session-credit")
+    db.commit()
+    assert result.balance_after == 150, (
+        f"balance computed from stale identity-map value: {result.balance_after}"
+    )
+
+    with SessionLocal() as fresh:
+        balance = fresh.execute(
+            select(User.balance).where(User.id == user.id)
+        ).scalar_one()
+        ledger_sum = fresh.execute(
+            select(func.sum(LedgerEntry.amount)).where(LedgerEntry.user_id == user.id)
+        ).scalar_one()
+    assert balance == ledger_sum == 150
 
 
 def test_balance_always_matches_ledger_sum(db):

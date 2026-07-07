@@ -89,7 +89,11 @@ class Redemption(Base):
     usd: Mapped[Decimal] = mapped_column(Numeric(10, 2), nullable=False)
     coins: Mapped[int] = mapped_column(Integer, nullable=False)
     status: Mapped[str] = mapped_column(
-        Text, nullable=False, default="pending", server_default=text("'pending'")
+        Text,
+        nullable=False,
+        default="pending",
+        server_default=text("'pending'"),
+        index=True,  # the admin queue filters on status
     )  # pending | approved | sent | denied
     tremendous_order_id: Mapped[str | None] = mapped_column(Text)
     created_at: Mapped[datetime] = mapped_column(

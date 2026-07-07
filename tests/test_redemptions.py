@@ -1,13 +1,17 @@
 """Redemption gates, atomic holds under concurrency, and the review queue."""
 
-import threading
-
 from sqlalchemy import func, select
 
 from app.db import SessionLocal
+from app.fulfillment import StubFulfillment
 from app.models import LedgerEntry, Redemption, User
-from app.services import DomainError, create_redemption
-from tests.conftest import ADMIN_HEADERS, auth_headers, make_user
+from app.services import (
+    DomainError,
+    approve_redemption,
+    create_redemption,
+    deny_redemption,
+)
+from tests.conftest import ADMIN_HEADERS, auth_headers, make_user, run_threads
 
 
 def _eligible_user(db, balance=200_000, **overrides):
@@ -94,10 +98,8 @@ def test_concurrent_spends_only_one_wins(db):
     user = _eligible_user(db, balance=50_000)
     db.commit()
     outcomes = []
-    barrier = threading.Barrier(6)
 
     def worker(i):
-        barrier.wait(timeout=10)
         with SessionLocal() as session:
             try:
                 create_redemption(session, user.id, "amazon_5")
@@ -107,12 +109,8 @@ def test_concurrent_spends_only_one_wins(db):
                 session.rollback()
                 outcomes.append(exc.code)
 
-    threads = [threading.Thread(target=worker, args=(i,)) for i in range(6)]
-    for t in threads:
-        t.start()
-    for t in threads:
-        t.join(timeout=30)
-
+    errors = run_threads(6, worker)
+    assert errors == []
     assert outcomes.count("ok") == 1, outcomes
 
     with SessionLocal() as session:
@@ -132,6 +130,63 @@ def test_concurrent_spends_only_one_wins(db):
     assert balance == 0
     assert holds == 1
     assert pending == 1
+
+
+def test_concurrent_approve_and_deny_never_both_win(db):
+    """Regression: without a row lock on the redemption, an approve and a
+    deny could both pass the status check — shipping the gift card AND
+    refunding the hold. Exactly one may win."""
+    for _ in range(5):  # the race needs a few attempts to interleave badly
+        user = _eligible_user(db, balance=50_000)
+        with SessionLocal() as s:
+            redemption = create_redemption(s, user.id, "amazon_5")
+            s.commit()
+            rid = redemption.id
+        stub = StubFulfillment()
+        outcomes = {}
+
+        def approver(_):
+            with SessionLocal() as s:
+                r = s.get(Redemption, rid)
+                try:
+                    approve_redemption(s, r, stub)
+                    outcomes["approve"] = "ok"
+                except DomainError as exc:
+                    s.rollback()
+                    outcomes["approve"] = exc.code
+
+        def denier(_):
+            with SessionLocal() as s:
+                r = s.get(Redemption, rid)
+                try:
+                    deny_redemption(s, r)
+                    s.commit()
+                    outcomes["deny"] = "ok"
+                except DomainError as exc:
+                    s.rollback()
+                    outcomes["deny"] = exc.code
+
+        errors = run_threads(2, lambda i: approver(i) if i == 0 else denier(i))
+        assert errors == []
+        assert sorted(outcomes.values()).count("ok") == 1, outcomes
+
+        with SessionLocal() as s:
+            status = s.get(Redemption, rid).status
+            refunds = s.execute(
+                select(func.count())
+                .select_from(LedgerEntry)
+                .where(
+                    LedgerEntry.kind == "redemption_refund",
+                    LedgerEntry.ref == str(rid),
+                )
+            ).scalar_one()
+        card_shipped = len(stub.orders) > 0
+        refunded = refunds > 0
+        assert not (card_shipped and refunded), (
+            f"double payout: card shipped AND hold refunded (status={status})"
+        )
+        assert (status == "sent") == card_shipped
+        assert (status == "denied") == refunded
 
 
 # ---------------------------------------------------------------------------
@@ -251,6 +306,50 @@ def test_no_auto_approve_at_or_over_10_usd(client, db, stub_fulfillment):
         "/v1/redemptions", json={"sku": "amazon_10"}, headers=headers
     ).json()
     assert body["status"] == "pending"
+
+
+def test_cooldown_blocks_rapid_resubmit(client, db, stub_fulfillment):
+    """POST /v1/redemptions has no idem_key; the cooldown is what stops a
+    network retry from shipping a second auto-approved gift card."""
+    from app.config import get_settings
+
+    user = _eligible_user(db, balance=500_000)
+    headers = _login_as(client, db, user)
+    for _ in range(2):  # unlock auto-approval
+        rid = client.post(
+            "/v1/redemptions", json={"sku": "amazon_5"}, headers=headers
+        ).json()["id"]
+        client.post(
+            f"/admin/redemptions/{rid}/approve", headers=ADMIN_HEADERS
+        ).raise_for_status()
+
+    # push the setup redemptions out of the cooldown window
+    from datetime import timedelta
+
+    from app import clock
+
+    db.execute(
+        Redemption.__table__.update()
+        .where(Redemption.user_id == user.id)
+        .values(created_at=clock.now_utc() - timedelta(hours=2))
+    )
+    db.commit()
+
+    get_settings().redemption_cooldown_seconds = 3600
+    try:
+        first = client.post(
+            "/v1/redemptions", json={"sku": "amazon_5"}, headers=headers
+        )
+        assert first.status_code == 201
+        assert first.json()["status"] == "sent"  # auto-approved
+        retry = client.post(
+            "/v1/redemptions", json={"sku": "amazon_5"}, headers=headers
+        )
+        assert retry.status_code == 429
+        assert retry.json()["detail"] == "redemption_cooldown"
+    finally:
+        get_settings().redemption_cooldown_seconds = 0
+    assert len(stub_fulfillment.orders) == 3  # not 4
 
 
 def test_no_auto_approve_with_risk_score(client, db, stub_fulfillment):

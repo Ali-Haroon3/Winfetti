@@ -55,12 +55,23 @@ POST /admin/redemptions/{id}/approve  /deny
 ```
 
 Redemption gates: verified email, account ≥ 7 days old, ≥ 10 verified ad
-receipts, no other pending redemption, sufficient balance. The first two
-redemptions per user are approved manually; after that, orders under $10 from
-zero-risk users auto-approve. A fulfillment failure leaves the redemption in
-`approved` — re-approving retries the order, and Tremendous dedupes on
-`external_id` so a retry can never pay twice. Rate-limit and gate denials are
-recorded in `fraud_events`.
+receipts, no other pending redemption, a 60s cooldown since the user's last
+redemption (POST carries no idem_key, so this is what stops a network retry
+from shipping twice), and sufficient balance. The first two redemptions per
+user are approved manually; after that, orders under $10 from zero-risk users
+auto-approve. A fulfillment failure leaves the redemption in `approved` —
+list those with `?status=approved` and re-approve to retry (Tremendous
+dedupes on `external_id`, so a retry can never pay twice; deny is only valid
+from `pending`, because an `approved` row may already have an order in
+flight). Rate-limit, gate, and auth denials are all recorded in
+`fraud_events`.
+
+Deployment note: `TRUST_PROXY_HEADERS` defaults to true, which assumes
+exactly one edge proxy (Fly/Railway) appending the client IP to
+`X-Forwarded-For`. If you expose the app directly, set it to false or the
+per-IP auth rate limit becomes spoofable. Builds install from
+`requirements.lock` (exact pins); `requirements.txt` holds the human-edited
+floors — refresh the lock after changing it.
 
 Phase 2 (not yet built): AdMob SSV, offerwall postbacks, RevenueCat/Stripe
 webhooks — the `ad_receipts` and `purchases` tables they write to already

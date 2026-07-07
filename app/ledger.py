@@ -24,6 +24,21 @@ class InsufficientBalance(Exception):
     pass
 
 
+# Credit kinds that count as "earned today" for the daily total cap.
+# Refunds and admin corrections give back coins the user already had —
+# counting them would let a denied redemption burn the user's earning room.
+EARNING_KINDS = [
+    "game_win",
+    "checkin",
+    "mission",
+    "ad_reward",
+    "offer",
+    "cashback",
+    "order_bonus",
+    "achievement",
+]
+
+
 @dataclass
 class LedgerResult:
     entry: LedgerEntry
@@ -32,9 +47,18 @@ class LedgerResult:
 
 
 def lock_user(session: Session, user_id: uuid.UUID) -> User:
-    """Row-lock the user for the rest of the transaction."""
+    """Row-lock the user for the rest of the transaction.
+
+    populate_existing is load-bearing: the request session usually already
+    holds this User from auth, and without it SQLAlchemy would return the
+    stale identity-map instance — locked at the DB level but carrying a
+    pre-lock balance, which would corrupt every balance computed from it.
+    """
     return session.execute(
-        select(User).where(User.id == user_id).with_for_update()
+        select(User)
+        .where(User.id == user_id)
+        .with_for_update()
+        .execution_options(populate_existing=True)
     ).scalar_one()
 
 

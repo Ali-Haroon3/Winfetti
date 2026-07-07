@@ -16,7 +16,10 @@ the same transaction. Never write a balance without going through
 - `app/ledger.py` — the only way coins move; idempotency + row locking
 - `app/services.py` — game claims (caps/multipliers), check-in streaks, redemption lifecycle
 - `app/payouts.py` — server-owned payout tables, check-in rewards, redemption catalog
-- `app/routes/`, `app/admin/` — HTTP layer; routes commit, services lock
+- `app/routes/`, `app/admin/` — HTTP layer; routes commit, services lock.
+  One deliberate exception: `approve_redemption` commits mid-service so the
+  `approved` state is durable (and its row lock released) before the
+  external Tremendous call — don't "fix" that.
 - `app/webhooks/` — Phase 2 (AdMob SSV, offerwalls, RevenueCat, Stripe)
 - `app/fulfillment.py` — Tremendous behind a Protocol; stub used when no API key
 - `app/clock.py` — the server clock seam; never call `datetime.now()` elsewhere

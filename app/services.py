@@ -102,9 +102,14 @@ def claim_game_win(
     if payout is None:
         raise DomainError(404, "unknown_game_event")
 
+    # Scope the client-supplied key to this user: two users innocently
+    # sending the same key must not collide on the global unique constraint,
+    # and no client string can squat on a system key like "checkin:...".
+    scoped_key = f"game:{user_id}:{idem_key}"
+
     user = ledger.lock_user(session, user_id)
 
-    existing = ledger.find_by_idem_key(session, idem_key)
+    existing = ledger.find_by_idem_key(session, scoped_key)
     if existing is not None:
         return ClaimResult(
             awarded=0, balance=user.balance, capped=False, replay=True
@@ -121,7 +126,9 @@ def claim_game_win(
     if amount > game_room:
         amount, capped = game_room, True
 
-    total_today = ledger.credited_since(session, user.id, day_start)
+    total_today = ledger.credited_since(
+        session, user.id, day_start, kinds=ledger.EARNING_KINDS
+    )
     total_room = max(0, settings.daily_total_credit_cap - total_today)
     if amount > total_room:
         amount, capped = total_room, True
@@ -138,7 +145,7 @@ def claim_game_win(
     # A zero-amount entry still burns the idem_key, so a capped claim can't
     # be replayed for coins after midnight.
     result = ledger.apply(
-        session, user, amount, "game_win", idem_key, ref=f"{game}:{event}"
+        session, user, amount, "game_win", scoped_key, ref=f"{game}:{event}"
     )
     return ClaimResult(
         awarded=amount if result.created else 0,
@@ -200,6 +207,17 @@ def do_checkin(session: Session, user_id: uuid.UUID) -> CheckinResult:
 # Redemptions
 
 
+def _lock_redemption(session: Session, redemption_id: uuid.UUID) -> Redemption:
+    """Row-lock a redemption so approve/deny can't race each other.
+    populate_existing for the same reason as ledger.lock_user."""
+    return session.execute(
+        select(Redemption)
+        .where(Redemption.id == redemption_id)
+        .with_for_update()
+        .execution_options(populate_existing=True)
+    ).scalar_one()
+
+
 def create_redemption(session: Session, user_id: uuid.UUID, sku: str) -> Redemption:
     """Gate, then atomically hold the coins and queue the redemption."""
     settings = get_settings()
@@ -231,6 +249,19 @@ def create_redemption(session: Session, user_id: uuid.UUID, sku: str) -> Redempt
     ).scalar_one()
     if pending > 0:
         raise DomainError(409, "redemption_already_pending")
+
+    # POST /v1/redemptions carries no idem_key, so a network-level retry
+    # would otherwise create (and auto-approve-ship) a second redemption.
+    if settings.redemption_cooldown_seconds > 0:
+        last_created = session.execute(
+            select(func.max(Redemption.created_at)).where(
+                Redemption.user_id == user.id
+            )
+        ).scalar_one()
+        if last_created is not None and (
+            clock.now_utc() - last_created
+        ).total_seconds() < settings.redemption_cooldown_seconds:
+            raise DomainError(429, "redemption_cooldown")
 
     if user.balance < item["coins"]:
         raise DomainError(400, "insufficient_balance")
@@ -277,41 +308,55 @@ def approve_redemption(
 ) -> Redemption:
     """pending -> approved -> (Tremendous order) -> sent.
 
-    The approved state is committed before the external call, so a crash
-    mid-fulfillment leaves an 'approved' row to retry — and the provider
-    dedupes on external_id, so a retry can't pay twice.
+    The status check happens under a row lock so approve can't race deny
+    (both re-read the row FOR UPDATE before acting). The approved state is
+    committed before the external call — releasing the lock so it isn't held
+    across network I/O — and a crash mid-fulfillment leaves an 'approved'
+    row to retry. The provider dedupes on external_id, so neither a retry
+    nor two concurrent approves can pay twice.
     """
+    redemption = _lock_redemption(session, redemption.id)
     if redemption.status not in ("pending", "approved"):
+        session.rollback()
         raise DomainError(409, "not_approvable", f"status is {redemption.status}")
 
     user = session.get(User, redemption.user_id)
     if user is None or not user.email:
+        session.rollback()
         raise DomainError(409, "user_has_no_email")
+    email = user.email
 
     if redemption.status == "pending":
         redemption.status = "approved"
         redemption.reviewed_at = clock.now_utc()
-        session.commit()
+    session.commit()  # releases the row lock before the external call
 
-    if redemption.tremendous_order_id is None:
-        try:
-            order_id = fulfillment.create_order(
-                email=user.email,
-                usd=redemption.usd,
-                external_id=str(redemption.id),
-            )
-        except FulfillmentError as exc:
-            raise DomainError(502, "fulfillment_failed", str(exc))
-        redemption.tremendous_order_id = order_id
+    try:
+        order_id = fulfillment.create_order(
+            email=email,
+            usd=redemption.usd,
+            external_id=str(redemption.id),
+        )
+    except FulfillmentError as exc:
+        raise DomainError(502, "fulfillment_failed", str(exc))
 
+    redemption = _lock_redemption(session, redemption.id)
+    redemption.tremendous_order_id = order_id
     redemption.status = "sent"
     session.commit()
     return redemption
 
 
 def deny_redemption(session: Session, redemption: Redemption) -> Redemption:
-    """Refund the hold and close the redemption, atomically."""
+    """Refund the hold and close the redemption, atomically.
+
+    Locks the redemption row before the status check so a deny can never
+    race an approve into refunding a fulfilled redemption. Lock order is
+    redemption -> user everywhere.
+    """
+    redemption = _lock_redemption(session, redemption.id)
     if redemption.status != "pending":
+        session.rollback()
         raise DomainError(409, "not_deniable", f"status is {redemption.status}")
 
     user = ledger.lock_user(session, redemption.user_id)

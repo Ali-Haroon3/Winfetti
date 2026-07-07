@@ -115,6 +115,54 @@ def test_daily_total_credit_cap_counts_all_credit_kinds(client, db, no_happy_hou
     assert user.balance == 600
 
 
+def test_same_client_idem_key_from_two_users_credits_both(client, db, no_happy_hour):
+    """idem_key is globally unique in the ledger; claims must be scoped per
+    user so two clients innocently generating the same key don't collide."""
+    headers_a, _ = auth_headers(client)
+    headers_b, _ = auth_headers(client)
+    a = _claim(client, headers_a, event="seg_500", idem_key="not-very-random-1").json()
+    b = _claim(client, headers_b, event="seg_500", idem_key="not-very-random-1").json()
+    assert a["awarded"] == 500
+    assert b["awarded"] == 500, "cross-user idem_key collision swallowed the win"
+    assert b["replay"] is False
+
+
+def test_client_idem_key_cannot_poison_system_keys(client, db, no_happy_hour):
+    """A claim whose idem_key mimics the server's checkin key must not burn
+    the user's real checkin for the day."""
+    from app import clock
+
+    headers, user_id = auth_headers(client)
+    poison = f"checkin:{user_id}:{clock.today_utc().isoformat()}"
+    _claim(client, headers, event="seg_100", idem_key=poison)
+    body = client.post("/v1/checkin", headers=headers).json()
+    assert body["awarded"] == 100
+    assert body["already_checked_in"] is False
+
+
+def test_refund_does_not_consume_daily_credit_cap(client, db, no_happy_hour):
+    """A denied redemption returns coins the user already earned; it must
+    not eat the day's earning room or trigger cap/risk flags."""
+    from app import ledger
+    from app.db import SessionLocal
+    from tests.conftest import make_user
+
+    settings = no_happy_hour
+    settings.daily_total_credit_cap = 600
+    headers, user_id = auth_headers(client)
+    with SessionLocal() as s:
+        ledger.apply_by_id(
+            s, user_id, 100_000, "redemption_refund", f"refund-seed:{user_id}"
+        )
+        s.commit()
+
+    body = _claim(client, headers, event="seg_500").json()
+    assert body["awarded"] == 500
+    assert body["capped"] is False
+    user = db.get(User, user_id)
+    assert user.risk_score == 0
+
+
 def test_me_reflects_daily_state(client, db, no_happy_hour):
     headers, _ = auth_headers(client)
     _claim(client, headers, event="seg_1000")
