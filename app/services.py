@@ -6,6 +6,8 @@ redemption never leaves a partial write behind. Fraud events for denials are
 written by the route layer after the rollback.
 """
 
+import hashlib
+import secrets
 import uuid
 from dataclasses import dataclass
 from datetime import timedelta
@@ -18,7 +20,14 @@ from app import clock, ledger
 from app.config import get_settings
 from app.fraud import log_fraud_event
 from app.fulfillment import FulfillmentClient, FulfillmentError
-from app.models import AdReceipt, Purchase, Redemption, User
+from app.models import (
+    AdReceipt,
+    CashbackCredit,
+    EmailVerification,
+    Purchase,
+    Redemption,
+    User,
+)
 from app.payouts import (
     BOOST_PRODUCTS,
     GAME_PAYOUTS,
@@ -469,3 +478,151 @@ def expire_gold(session: Session, user_id: uuid.UUID) -> int:
     for row in rows:
         row.status = "expired"
     return len(rows)
+
+
+# ---------------------------------------------------------------------------
+# Email verification (Phase 3): gift cards go to this address, so it gates
+# redemptions and must be proven, not just claimed.
+
+
+def _hash_token(token: str) -> str:
+    return hashlib.sha256(token.encode()).hexdigest()
+
+
+def _email_verified_elsewhere(session: Session, email: str, user_id: uuid.UUID) -> bool:
+    return (
+        session.execute(
+            select(func.count())
+            .select_from(User)
+            .where(
+                func.lower(User.email) == email.lower(),
+                User.email_verified.is_(True),
+                User.id != user_id,
+            )
+        ).scalar_one()
+        > 0
+    )
+
+
+def request_email_verification(
+    session: Session, user_id: uuid.UUID, email: str
+) -> str:
+    """Store a pending verification and return the raw token. The caller
+    hands the token to the email sender; only its hash is persisted."""
+    settings = get_settings()
+    user = ledger.lock_user(session, user_id)
+
+    if _email_verified_elsewhere(session, email, user.id):
+        raise DomainError(409, "email_in_use")
+
+    # a new request supersedes any outstanding token for this user
+    now = clock.now_utc()
+    for old in (
+        session.execute(
+            select(EmailVerification).where(
+                EmailVerification.user_id == user.id,
+                EmailVerification.consumed_at.is_(None),
+            )
+        )
+        .scalars()
+        .all()
+    ):
+        old.consumed_at = now
+
+    token = secrets.token_urlsafe(32)
+    session.add(
+        EmailVerification(
+            user_id=user.id,
+            email=email,
+            token_hash=_hash_token(token),
+            expires_at=now + timedelta(hours=settings.email_token_ttl_hours),
+        )
+    )
+    return token
+
+
+def confirm_email_verification(session: Session, user_id: uuid.UUID, token: str) -> User:
+    user = ledger.lock_user(session, user_id)
+    now = clock.now_utc()
+    verification = session.execute(
+        select(EmailVerification).where(
+            EmailVerification.user_id == user.id,
+            EmailVerification.token_hash == _hash_token(token),
+            EmailVerification.consumed_at.is_(None),
+            EmailVerification.expires_at > now,
+        )
+    ).scalar_one_or_none()
+    if verification is None:
+        raise DomainError(400, "invalid_or_expired_token")
+    if _email_verified_elsewhere(session, verification.email, user.id):
+        raise DomainError(409, "email_in_use")
+
+    verification.consumed_at = now
+    user.email = verification.email
+    user.email_verified = True
+    return user
+
+
+# ---------------------------------------------------------------------------
+# Affiliate cashback (Phase 3): sales credit as pending and only reach the
+# ledger when the maturation job runs after the return window.
+
+
+def create_cashback(
+    session: Session,
+    user_id: uuid.UUID,
+    network: str,
+    tx_id: str,
+    coins: int,
+    payload: dict | None = None,
+) -> tuple[CashbackCredit, bool]:
+    """Record a pending cashback credit, idempotent on (network, tx_id).
+    No coins move here."""
+    settings = get_settings()
+    scoped_tx = f"{network}:{tx_id}"
+    ledger.lock_user(session, user_id)  # also validates the user exists
+
+    existing = session.execute(
+        select(CashbackCredit).where(CashbackCredit.tx_id == scoped_tx)
+    ).scalar_one_or_none()
+    if existing is not None:
+        return existing, False
+
+    credit = CashbackCredit(
+        user_id=user_id,
+        network=network,
+        tx_id=scoped_tx,
+        coins=coins,
+        matures_at=clock.now_utc()
+        + timedelta(days=settings.cashback_maturation_days),
+        payload=payload,
+    )
+    session.add(credit)
+    session.flush()
+    return credit, True
+
+
+def reverse_cashback(
+    session: Session, network: str, tx_id: str
+) -> CashbackCredit | None:
+    """A returned order cancels its pending cashback. Reversals arriving
+    after maturity are flagged for ops instead of clawed back."""
+    scoped_tx = f"{network}:{tx_id}"
+    credit = session.execute(
+        select(CashbackCredit)
+        .where(CashbackCredit.tx_id == scoped_tx)
+        .with_for_update()
+        .execution_options(populate_existing=True)
+    ).scalar_one_or_none()
+    if credit is None:
+        return None
+    if credit.status == "pending":
+        credit.status = "reversed"
+    elif credit.status == "matured":
+        log_fraud_event(
+            session,
+            "cashback_reversal_after_maturity",
+            user_id=credit.user_id,
+            detail={"tx_id": scoped_tx, "coins": credit.coins},
+        )
+    return credit

@@ -137,6 +137,49 @@ class Purchase(Base):
     )
 
 
+class EmailVerification(Base):
+    __tablename__ = "email_verifications"
+
+    id: Mapped[int] = mapped_column(BigInteger, Identity(), primary_key=True)
+    user_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("users.id"), nullable=False, index=True
+    )
+    email: Mapped[str] = mapped_column(Text, nullable=False)
+    # only the SHA-256 of the token is stored; the raw token exists solely
+    # in the email we send
+    token_hash: Mapped[str] = mapped_column(Text, unique=True, nullable=False)
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    consumed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+
+
+class CashbackCredit(Base):
+    """Affiliate commissions land here as 'pending' and only reach the
+    ledger when the maturation job runs after the return window."""
+
+    __tablename__ = "cashback_credits"
+
+    id: Mapped[int] = mapped_column(BigInteger, Identity(), primary_key=True)
+    user_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("users.id"), nullable=False, index=True
+    )
+    network: Mapped[str] = mapped_column(Text, nullable=False)
+    tx_id: Mapped[str] = mapped_column(Text, unique=True, nullable=False)
+    coins: Mapped[int] = mapped_column(Integer, nullable=False)
+    status: Mapped[str] = mapped_column(
+        Text, nullable=False, default="pending", server_default=text("'pending'")
+    )  # pending | matured | reversed
+    matures_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    payload: Mapped[dict | None] = mapped_column(JSONB)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+
+    __table_args__ = (Index("ix_cashback_status_matures", "status", "matures_at"),)
+
+
 class FraudEvent(Base):
     __tablename__ = "fraud_events"
 

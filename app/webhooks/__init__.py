@@ -4,8 +4,15 @@ third-party signature or shared secret before anything touches the ledger,
 and returns 503 until its secret is configured."""
 
 from app.webhooks.admob import router as admob_router
+from app.webhooks.affiliate import router as affiliate_router
 from app.webhooks.revenuecat import router as revenuecat_router
 from app.webhooks.stripe import router as stripe_router
 from app.webhooks.tapjoy import router as tapjoy_router
 
-routers = [admob_router, tapjoy_router, revenuecat_router, stripe_router]
+routers = [
+    admob_router,
+    tapjoy_router,
+    revenuecat_router,
+    stripe_router,
+    affiliate_router,
+]

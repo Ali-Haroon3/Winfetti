@@ -31,7 +31,16 @@ from app import clock
 from app.db import Base, SessionLocal, engine
 from app.fulfillment import StubFulfillment
 from app.main import app
-from app.models import AdReceipt, FraudEvent, LedgerEntry, Purchase, Redemption, User
+from app.models import (
+    AdReceipt,
+    CashbackCredit,
+    EmailVerification,
+    FraudEvent,
+    LedgerEntry,
+    Purchase,
+    Redemption,
+    User,
+)
 
 ADMIN_HEADERS = {"X-Admin-Key": "test-admin-key"}
 
@@ -72,7 +81,16 @@ def _schema():
 def _clean_tables():
     yield
     with SessionLocal() as db:
-        for model in (FraudEvent, AdReceipt, Purchase, Redemption, LedgerEntry, User):
+        for model in (
+            FraudEvent,
+            AdReceipt,
+            Purchase,
+            Redemption,
+            EmailVerification,
+            CashbackCredit,
+            LedgerEntry,
+            User,
+        ):
             db.execute(delete(model))
         db.commit()
 

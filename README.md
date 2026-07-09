@@ -48,14 +48,20 @@ POST /v1/auth/device            {device_id} -> {jwt}        (5/min/IP)
 GET  /v1/me                     balance, gold, boost_until, daily state
 POST /v1/game/claim             {game, event, idem_key}     (writes: 30/min/user)
 POST /v1/checkin                server-clock streaks
+POST /v1/me/email               {email} -> verification email (token, 24h TTL)
+POST /v1/me/email/verify        {token} -> email_verified
 POST /v1/redemptions            {sku}   GET /v1/redemptions
 GET  /v1/redemptions/catalog
 GET  /v1/webhooks/admob-ssv     AdMob SSV (ECDSA-verified rewarded ads)
 GET  /v1/webhooks/tapjoy        offerwall postback (shared-secret hash)
 POST /v1/webhooks/revenuecat    iOS IAP -> gold/boost entitlements
 POST /v1/webhooks/stripe        web purchases (Stripe-Signature verified)
+GET  /v1/webhooks/affiliate     cashback postbacks (HMAC; pending -> matured)
 GET  /admin/redemptions?status=pending          (X-Admin-Key header)
 POST /admin/redemptions/{id}/approve  /deny
+GET  /admin/fraud/events        GET /admin/fraud/summary
+GET  /admin/users/{id}          POST /admin/users/{id}/status {active|banned}
+POST /admin/jobs/mature-cashback
 ```
 
 Redemption gates: verified email, account ≥ 7 days old, ≥ 10 verified ad
@@ -87,5 +93,16 @@ never trusted); offerwall amounts are clamped to
 `custom_data`, Tapjoy's `snuid`, RevenueCat's `app_user_id`, and Stripe
 checkout `metadata.user_id`.
 
-Phase 3 (not yet built): email verification, affiliate cashback postbacks +
-maturation job, fraud dashboard, Sentry.
+Cashback (Phase 3): affiliate postbacks (`AFFILIATE_SECRET`-signed) create
+*pending* credits worth `commission * CASHBACK_SHARE`; coins reach the
+ledger only when the maturation job runs after the
+`CASHBACK_MATURATION_DAYS` return window — schedule
+`python -m app.jobs mature-cashback` from cron (concurrent runs are safe:
+SKIP LOCKED + ledger idempotency). Reversals cancel pending credits;
+reversals arriving after maturity are flagged in `fraud_events`, not clawed
+back. Email verification tokens are stored hashed with a 24h TTL and are
+single-use; a verified email is exclusive to one account. Verification
+emails go through the `EmailSender` seam in `app/emailer.py` — wire a real
+provider there (the default just logs). Set `SENTRY_DSN` to enable Sentry.
+The fraud dashboard is JSON-only for now: recent events, counts by
+kind/IP, top risk-scored users, per-user drilldown, ban/unban.

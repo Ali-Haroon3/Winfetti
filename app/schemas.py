@@ -2,7 +2,7 @@ import uuid
 from datetime import datetime
 from decimal import Decimal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, EmailStr, Field
 
 
 class DeviceAuthRequest(BaseModel):
@@ -52,6 +52,20 @@ class CheckinResponse(BaseModel):
     awarded: int
     balance: int
     already_checked_in: bool
+
+
+class EmailRequest(BaseModel):
+    email: EmailStr
+
+
+class EmailVerifyRequest(BaseModel):
+    token: str = Field(min_length=16, max_length=128)
+
+
+class EmailStatusResponse(BaseModel):
+    email: str | None
+    email_verified: bool
+    pending_email: str | None
 
 
 class RedemptionCreateRequest(BaseModel):

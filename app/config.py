@@ -57,6 +57,21 @@ class Settings(BaseSettings):
     stripe_webhook_secret: str = ""
     stripe_webhook_tolerance_seconds: int = 300
 
+    # Email verification (Phase 3).
+    email_token_ttl_hours: int = 24
+
+    # Affiliate cashback (Phase 3). Sales credit as pending and mature after
+    # the return window; the endpoint 503s until the secret is set.
+    affiliate_secret: str = ""
+    cashback_maturation_days: int = 30
+    coins_per_usd: int = 10_000
+    cashback_share: float = 0.5  # user's cut of the affiliate commission
+    max_cashback_coins_per_postback: int = 100_000
+
+    # Observability (Phase 3). Sentry is off until a DSN is set.
+    sentry_dsn: str = ""
+    sentry_traces_sample_rate: float = 0.1
+
     # Rate limits (Redis fixed window, per minute).
     rate_limit_enabled: bool = True
     rate_limit_writes_per_min: int = 30
