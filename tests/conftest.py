@@ -89,6 +89,25 @@ def stub_fulfillment():
 
 
 @pytest.fixture
+def settings():
+    """Yields the (cached) Settings object; restores every field after."""
+    from app.config import get_settings
+
+    s = get_settings()
+    snapshot = dict(s.__dict__)
+    yield s
+    for key, value in snapshot.items():
+        setattr(s, key, value)
+
+
+@pytest.fixture
+def no_happy_hour(settings):
+    settings.happy_hour_start_utc = 0
+    settings.happy_hour_end_utc = 0
+    return settings
+
+
+@pytest.fixture
 def client(stub_fulfillment):
     with TestClient(app) as c:
         # lifespan already set real clients; override with test doubles

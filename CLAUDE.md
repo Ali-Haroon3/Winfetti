@@ -20,7 +20,9 @@ the same transaction. Never write a balance without going through
   One deliberate exception: `approve_redemption` commits mid-service so the
   `approved` state is durable (and its row lock released) before the
   external Tremendous call — don't "fix" that.
-- `app/webhooks/` — Phase 2 (AdMob SSV, offerwalls, RevenueCat, Stripe)
+- `app/webhooks/` — verified credit paths: AdMob SSV (ECDSA), Tapjoy
+  (shared-secret hash), RevenueCat/Stripe (purchase entitlements). Each
+  endpoint 503s until its secret is configured.
 - `app/fulfillment.py` — Tremendous behind a Protocol; stub used when no API key
 - `app/clock.py` — the server clock seam; never call `datetime.now()` elsewhere
 

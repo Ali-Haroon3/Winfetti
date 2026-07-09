@@ -18,9 +18,11 @@ from app import clock, ledger
 from app.config import get_settings
 from app.fraud import log_fraud_event
 from app.fulfillment import FulfillmentClient, FulfillmentError
-from app.models import AdReceipt, Redemption, User
+from app.models import AdReceipt, Purchase, Redemption, User
 from app.payouts import (
+    BOOST_PRODUCTS,
     GAME_PAYOUTS,
+    GOLD_PRODUCT_ID,
     MAX_SINGLE_WIN_BASE,
     REDEMPTION_CATALOG,
     checkin_reward,
@@ -45,15 +47,13 @@ def happy_hour_active() -> bool:
 
 
 def gold_active(session: Session, user: User) -> bool:
-    from app.models import Purchase
-
     return (
         session.execute(
             select(func.count())
             .select_from(Purchase)
             .where(
                 Purchase.user_id == user.id,
-                Purchase.product_id == "gold",
+                Purchase.product_id == GOLD_PRODUCT_ID,
                 Purchase.status == "active",
             )
         ).scalar_one()
@@ -371,3 +371,101 @@ def deny_redemption(session: Session, redemption: Redemption) -> Redemption:
     redemption.status = "denied"
     redemption.reviewed_at = clock.now_utc()
     return redemption
+
+
+# ---------------------------------------------------------------------------
+# Webhook credit paths (Phase 2): every caller has already verified a
+# third-party signature. tx ids are stored network-prefixed so two networks
+# can never collide on the global unique constraint.
+
+
+@dataclass
+class VerifiedRewardResult:
+    awarded: int
+    replay: bool
+
+
+def credit_verified_reward(
+    session: Session,
+    user_id: uuid.UUID,
+    network: str,
+    tx_id: str,
+    amount: int,
+    kind: str,
+    payload: dict | None = None,
+) -> VerifiedRewardResult:
+    """Record the receipt and move the coins, idempotent on (network, tx_id).
+    Raises NoResultFound for an unknown user — callers turn that into a 4xx."""
+    scoped_tx = f"{network}:{tx_id}"
+    user = ledger.lock_user(session, user_id)
+
+    existing = session.execute(
+        select(AdReceipt).where(AdReceipt.tx_id == scoped_tx)
+    ).scalar_one_or_none()
+    if existing is not None:
+        return VerifiedRewardResult(awarded=0, replay=True)
+
+    session.add(
+        AdReceipt(
+            user_id=user.id,
+            network=network,
+            tx_id=scoped_tx,
+            payload=payload,
+            verified=True,
+        )
+    )
+    result = ledger.apply(
+        session, user, amount, kind, idem_key=f"{kind}:{scoped_tx}", ref=scoped_tx
+    )
+    return VerifiedRewardResult(
+        awarded=amount if result.created else 0, replay=not result.created
+    )
+
+
+def apply_entitlement_purchase(
+    session: Session, user_id: uuid.UUID, product_id: str, store_tx_id: str
+) -> bool:
+    """Grant an IAP entitlement (gold subscription or boost consumable),
+    idempotent on store_tx_id. Returns False on replay. The user row lock
+    serializes boost_until math."""
+    user = ledger.lock_user(session, user_id)
+
+    existing = session.execute(
+        select(Purchase).where(Purchase.store_tx_id == store_tx_id)
+    ).scalar_one_or_none()
+    if existing is not None:
+        return False
+
+    session.add(
+        Purchase(
+            user_id=user.id,
+            product_id=product_id,
+            store_tx_id=store_tx_id,
+            status="active",
+        )
+    )
+    if product_id in BOOST_PRODUCTS:
+        now = clock.now_utc()
+        base = user.boost_until if (user.boost_until and user.boost_until > now) else now
+        user.boost_until = base + BOOST_PRODUCTS[product_id]
+    session.flush()
+    return True
+
+
+def expire_gold(session: Session, user_id: uuid.UUID) -> int:
+    """Mark the user's active gold purchases expired (subscription lapsed)."""
+    ledger.lock_user(session, user_id)
+    rows = (
+        session.execute(
+            select(Purchase).where(
+                Purchase.user_id == user_id,
+                Purchase.product_id == GOLD_PRODUCT_ID,
+                Purchase.status == "active",
+            )
+        )
+        .scalars()
+        .all()
+    )
+    for row in rows:
+        row.status = "expired"
+    return len(rows)

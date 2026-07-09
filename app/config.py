@@ -42,6 +42,21 @@ class Settings(BaseSettings):
     # retry from creating (and possibly auto-shipping) a second order.
     redemption_cooldown_seconds: int = 60
 
+    # Phase 2 webhooks. Each endpoint returns 503 until its secret is set —
+    # a credit path with no signature to verify must not exist.
+    ad_reward_coins: int = 250  # server-owned; the SSV reward params are ignored
+    admob_verifier_keys_url: str = (
+        "https://www.gstatic.com/admob/reward/verifier-keys.json"
+    )
+    admob_keys_cache_ttl_seconds: int = 86_400
+    tapjoy_secret: str = ""
+    # Defensive clamp on offerwall payout sizes (the amount rides in the
+    # postback; the hash proves origin, not sanity).
+    max_offer_coins_per_postback: int = 50_000
+    revenuecat_webhook_auth: str = ""
+    stripe_webhook_secret: str = ""
+    stripe_webhook_tolerance_seconds: int = 300
+
     # Rate limits (Redis fixed window, per minute).
     rate_limit_enabled: bool = True
     rate_limit_writes_per_min: int = 30

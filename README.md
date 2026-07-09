@@ -50,6 +50,10 @@ POST /v1/game/claim             {game, event, idem_key}     (writes: 30/min/user
 POST /v1/checkin                server-clock streaks
 POST /v1/redemptions            {sku}   GET /v1/redemptions
 GET  /v1/redemptions/catalog
+GET  /v1/webhooks/admob-ssv     AdMob SSV (ECDSA-verified rewarded ads)
+GET  /v1/webhooks/tapjoy        offerwall postback (shared-secret hash)
+POST /v1/webhooks/revenuecat    iOS IAP -> gold/boost entitlements
+POST /v1/webhooks/stripe        web purchases (Stripe-Signature verified)
 GET  /admin/redemptions?status=pending          (X-Admin-Key header)
 POST /admin/redemptions/{id}/approve  /deny
 ```
@@ -73,6 +77,15 @@ per-IP auth rate limit becomes spoofable. Builds install from
 `requirements.lock` (exact pins); `requirements.txt` holds the human-edited
 floors — refresh the lock after changing it.
 
-Phase 2 (not yet built): AdMob SSV, offerwall postbacks, RevenueCat/Stripe
-webhooks — the `ad_receipts` and `purchases` tables they write to already
-exist.
+Webhook credit paths (Phase 2) are live but each returns 503 until its
+secret is configured (`TAPJOY_SECRET`, `REVENUECAT_WEBHOOK_AUTH`,
+`STRIPE_WEBHOOK_SECRET`); AdMob SSV verifies ECDSA signatures against
+Google's published verifier keys and needs no secret. Ad rewards pay the
+server-owned `AD_REWARD_COINS` (the callback's reward params are logged,
+never trusted); offerwall amounts are clamped to
+`MAX_OFFER_COINS_PER_POSTBACK`. Pass the user's uuid in AdMob's
+`custom_data`, Tapjoy's `snuid`, RevenueCat's `app_user_id`, and Stripe
+checkout `metadata.user_id`.
+
+Phase 3 (not yet built): email verification, affiliate cashback postbacks +
+maturation job, fraud dashboard, Sentry.

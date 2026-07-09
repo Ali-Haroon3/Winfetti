@@ -4,27 +4,8 @@ import uuid
 
 from sqlalchemy import select
 
-import pytest
-
-from app.config import get_settings
 from app.models import FraudEvent, User
 from tests.conftest import auth_headers
-
-
-@pytest.fixture
-def settings():
-    s = get_settings()
-    snapshot = dict(s.__dict__)
-    yield s
-    for key, value in snapshot.items():
-        setattr(s, key, value)
-
-
-@pytest.fixture
-def no_happy_hour(settings):
-    settings.happy_hour_start_utc = 0
-    settings.happy_hour_end_utc = 0
-    return settings
 
 
 def _claim(client, headers, game="wheel", event="seg_500", idem_key=None):

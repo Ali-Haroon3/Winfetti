@@ -6,6 +6,7 @@ The per-game event tables are placeholders sized to the spec's economy
 before launch.
 """
 
+from datetime import timedelta
 from decimal import Decimal
 
 # game -> event -> base coins
@@ -51,6 +52,14 @@ CHECKIN_REWARDS: list[int] = [100, 200, 300, 400, 500, 750, 1_000]
 def checkin_reward(streak: int) -> int:
     idx = min(max(streak, 1), len(CHECKIN_REWARDS)) - 1
     return CHECKIN_REWARDS[idx]
+
+
+# IAP products (granted by RevenueCat/Stripe webhooks, never by the client).
+GOLD_PRODUCT_ID = "gold"
+BOOST_PRODUCTS: dict[str, timedelta] = {
+    "boost_1h": timedelta(hours=1),
+    "boost_24h": timedelta(hours=24),
+}
 
 
 # Redemption catalog: sku -> (usd value, coin cost). 10,000 coins ≈ $1.
