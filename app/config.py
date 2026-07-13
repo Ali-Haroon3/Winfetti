@@ -41,6 +41,10 @@ class Settings(BaseSettings):
     # POST /v1/redemptions has no idem_key; the cooldown stops a network
     # retry from creating (and possibly auto-shipping) a second order.
     redemption_cooldown_seconds: int = 60
+    # An 'approved' row older than this had its fulfillment call fail or
+    # crash; the retry job re-drives it. Must comfortably exceed the
+    # fulfillment HTTP timeout so the job never races an in-flight order.
+    redemption_retry_stuck_after_seconds: int = 900
 
     # Phase 2 webhooks. Each endpoint returns 503 until its secret is set —
     # a credit path with no signature to verify must not exist.
@@ -59,6 +63,32 @@ class Settings(BaseSettings):
 
     # Email verification (Phase 3).
     email_token_ttl_hours: int = 24
+    # Expired tokens are dead weight; the purge job deletes them this many
+    # days after expiry.
+    email_token_purge_after_days: int = 7
+
+    # Email delivery. The SMTP sender activates when smtp_host and
+    # email_from are both set (works with SES/Postmark/Mailgun SMTP
+    # endpoints); otherwise verification emails are logged only.
+    smtp_host: str = ""
+    smtp_port: int = 587
+    smtp_username: str = ""
+    smtp_password: str = ""
+    smtp_starttls: bool = True  # ignored when smtp_ssl is set
+    smtp_ssl: bool = False  # implicit TLS (port 465 style)
+    email_from: str = ""
+    # Optional deep link included in the email; must contain {token}.
+    email_verify_link_template: str = ""
+
+    # In-process scheduler: the API runs its own maintenance jobs, so one
+    # process (or `docker compose up`) is fully self-operating with no
+    # external cron. Every job is safe under concurrent runs, so replicas
+    # can all run it. 0 disables an individual job.
+    scheduler_enabled: bool = True
+    scheduler_initial_delay_seconds: float = 10.0
+    scheduler_mature_cashback_every_seconds: float = 3600
+    scheduler_retry_redemptions_every_seconds: float = 300
+    scheduler_purge_email_tokens_every_seconds: float = 86_400
 
     # Affiliate cashback (Phase 3). Sales credit as pending and mature after
     # the return window; the endpoint 503s until the secret is set.

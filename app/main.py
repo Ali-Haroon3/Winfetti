@@ -14,6 +14,7 @@ from app.routes.email import router as email_router
 from app.routes.game import router as game_router
 from app.routes.me import router as me_router
 from app.routes.redemptions import router as redemptions_router
+from app.scheduler import build_scheduler
 from app.webhooks import routers as webhook_routers
 from app.webhooks.admob import AdMobKeyProvider
 
@@ -40,7 +41,12 @@ async def lifespan(app: FastAPI):
         settings.admob_verifier_keys_url, settings.admob_keys_cache_ttl_seconds
     )
     app.state.email_sender = build_email_sender()
+    app.state.scheduler = build_scheduler(app.state.fulfillment)
+    if app.state.scheduler is not None:
+        app.state.scheduler.start()
     yield
+    if app.state.scheduler is not None:
+        await app.state.scheduler.stop()
 
 
 def create_app() -> FastAPI:

@@ -41,6 +41,33 @@ a balance negative. `tests/test_redemptions.py` proves the redemption hold is
 atomic and the review queue (approve → Tremendous order → sent, deny →
 refund) behaves.
 
+CI (`.github/workflows/ci.yml`) runs the same suite against Postgres 16 +
+Redis 7 on every push, after proving the alembic chain applies cleanly and
+still matches `app/models.py` (`scripts/check_migrations.py`).
+
+## Background jobs
+
+The API schedules its own maintenance from the process lifespan
+(`app/scheduler.py`), so `docker compose up` — or one deployed machine — is
+fully self-operating with no external cron:
+
+- **mature-cashback** (hourly): credits pending cashback whose return window
+  has passed.
+- **retry-approved** (every 5 min): re-drives fulfillment for redemptions
+  stranded in `approved` by a fulfillment failure or crash. Tremendous
+  dedupes on `external_id`, so a retry can never pay twice; rows younger
+  than `REDEMPTION_RETRY_STUCK_AFTER_SECONDS` (default 15 min) are left
+  alone so an in-flight order is never double-called.
+- **purge-email-tokens** (daily): drops verification tokens that expired
+  more than `EMAIL_TOKEN_PURGE_AFTER_DAYS` ago.
+
+Every job is safe under concurrent runs (SKIP LOCKED row claims + ledger
+idempotency + fulfillment dedupe), so running several replicas is fine. Set
+`SCHEDULER_ENABLED=false` (or an individual interval to 0) to turn it off —
+e.g. when a separate worker runs the same jobs via cron:
+`python -m app.jobs {mature-cashback|retry-approved|purge-email-tokens}`.
+Each job is also triggerable via `POST /admin/jobs/...` for ops.
+
 ## API
 
 ```
@@ -61,7 +88,7 @@ GET  /admin/redemptions?status=pending          (X-Admin-Key header)
 POST /admin/redemptions/{id}/approve  /deny
 GET  /admin/fraud/events        GET /admin/fraud/summary
 GET  /admin/users/{id}          POST /admin/users/{id}/status {active|banned}
-POST /admin/jobs/mature-cashback
+POST /admin/jobs/{mature-cashback,retry-approved,purge-email-tokens}
 ```
 
 Redemption gates: verified email, account ≥ 7 days old, ≥ 10 verified ad
@@ -69,11 +96,12 @@ receipts, no other pending redemption, a 60s cooldown since the user's last
 redemption (POST carries no idem_key, so this is what stops a network retry
 from shipping twice), and sufficient balance. The first two redemptions per
 user are approved manually; after that, orders under $10 from zero-risk users
-auto-approve. A fulfillment failure leaves the redemption in `approved` —
-list those with `?status=approved` and re-approve to retry (Tremendous
+auto-approve. A fulfillment failure leaves the redemption in `approved`; the
+scheduled retry-approved job re-drives those automatically (Tremendous
 dedupes on `external_id`, so a retry can never pay twice; deny is only valid
 from `pending`, because an `approved` row may already have an order in
-flight). Rate-limit, gate, and auth denials are all recorded in
+flight — they also remain listable with `?status=approved` and manually
+re-approvable). Rate-limit, gate, and auth denials are all recorded in
 `fraud_events`.
 
 Deployment note: `TRUST_PROXY_HEADERS` defaults to true, which assumes
@@ -96,13 +124,14 @@ checkout `metadata.user_id`.
 Cashback (Phase 3): affiliate postbacks (`AFFILIATE_SECRET`-signed) create
 *pending* credits worth `commission * CASHBACK_SHARE`; coins reach the
 ledger only when the maturation job runs after the
-`CASHBACK_MATURATION_DAYS` return window — schedule
-`python -m app.jobs mature-cashback` from cron (concurrent runs are safe:
-SKIP LOCKED + ledger idempotency). Reversals cancel pending credits;
-reversals arriving after maturity are flagged in `fraud_events`, not clawed
-back. Email verification tokens are stored hashed with a 24h TTL and are
+`CASHBACK_MATURATION_DAYS` return window (the in-process scheduler runs it
+hourly — see Background jobs). Reversals cancel pending credits; reversals
+arriving after maturity are flagged in `fraud_events`, not clawed back.
+Email verification tokens are stored hashed with a 24h TTL and are
 single-use; a verified email is exclusive to one account. Verification
-emails go through the `EmailSender` seam in `app/emailer.py` — wire a real
-provider there (the default just logs). Set `SENTRY_DSN` to enable Sentry.
-The fraud dashboard is JSON-only for now: recent events, counts by
+emails send over SMTP once `SMTP_HOST` + `EMAIL_FROM` are set (any
+SES/Postmark/Mailgun SMTP endpoint works; `EMAIL_VERIFY_LINK_TEMPLATE`
+optionally embeds a deep link) — without them the dev sender just logs, and
+no one can pass the email gate in production. Set `SENTRY_DSN` to enable
+Sentry. The fraud dashboard is JSON-only for now: recent events, counts by
 kind/IP, top risk-scored users, per-user drilldown, ban/unban.

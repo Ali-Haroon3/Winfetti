@@ -210,3 +210,13 @@ def set_user_status(
 @router.post("/jobs/mature-cashback")
 def run_mature_cashback():
     return {"matured": jobs.mature_cashback()}
+
+
+@router.post("/jobs/retry-approved")
+def run_retry_approved(fulfillment=Depends(get_fulfillment)):
+    return {"retried": jobs.retry_stuck_redemptions(fulfillment)}
+
+
+@router.post("/jobs/purge-email-tokens")
+def run_purge_email_tokens():
+    return {"purged": jobs.purge_expired_email_verifications()}

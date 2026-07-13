@@ -22,6 +22,9 @@ os.environ["RATE_LIMIT_ENABLED"] = "false"
 os.environ["ADMIN_API_KEY"] = "test-admin-key"
 os.environ["TREMENDOUS_API_KEY"] = ""
 os.environ["REDEMPTION_COOLDOWN_SECONDS"] = "0"  # re-enabled per-test
+# TestClient runs the lifespan; background jobs firing mid-test would be
+# nondeterministic. The scheduler is tested directly in test_scheduler.py.
+os.environ["SCHEDULER_ENABLED"] = "false"
 
 import pytest
 from fastapi.testclient import TestClient

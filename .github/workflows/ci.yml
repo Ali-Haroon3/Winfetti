@@ -1,0 +1,65 @@
+# Every push runs the full suite against real Postgres + Redis (the
+# concurrency tests in tests/test_ledger.py are the contract), after
+# proving the alembic chain applies cleanly and still matches app/models.py.
+name: CI
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: winfetti
+          POSTGRES_PASSWORD: winfetti
+          POSTGRES_DB: winfetti_test
+        ports:
+          - "5432:5432"
+        options: >-
+          --health-cmd "pg_isready -U winfetti"
+          --health-interval 2s
+          --health-timeout 2s
+          --health-retries 15
+      redis:
+        image: redis:7
+        ports:
+          - "6379:6379"
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"  # matches the Dockerfile
+          cache: pip
+          cache-dependency-path: requirements-dev.txt
+
+      - name: Install dependencies
+        run: pip install -r requirements-dev.txt
+
+      - name: Migrations apply cleanly and match the models
+        # Scratch DB: pytest drops/creates its own tables in winfetti_test,
+        # so the migration chain gets a database it fully owns.
+        env:
+          DATABASE_URL: postgresql+psycopg://winfetti:winfetti@localhost:5432/winfetti_migrate
+          PGPASSWORD: winfetti
+        run: |
+          createdb -h localhost -U winfetti winfetti_migrate
+          alembic upgrade head
+          python scripts/check_migrations.py
+
+      - name: Run tests
+        env:
+          WINFETTI_TEST_DATABASE_URL: postgresql+psycopg://winfetti:winfetti@localhost:5432/winfetti_test
+        run: pytest -q

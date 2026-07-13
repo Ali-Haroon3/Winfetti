@@ -23,7 +23,12 @@ the same transaction. Never write a balance without going through
 - `app/webhooks/` — verified credit paths: AdMob SSV (ECDSA), Tapjoy
   (shared-secret hash), RevenueCat/Stripe (purchase entitlements). Each
   endpoint 503s until its secret is configured.
+- `app/jobs.py`, `app/scheduler.py` — maintenance jobs (cashback maturation,
+  stuck-redemption retry, token purge) run in-process from the lifespan and
+  must stay safe under concurrent runs (SKIP LOCKED + idempotency). Also
+  runnable via `python -m app.jobs ...` and `POST /admin/jobs/...`.
 - `app/fulfillment.py` — Tremendous behind a Protocol; stub used when no API key
+- `app/emailer.py` — verification email seam; SMTP when configured, else logs
 - `app/clock.py` — the server clock seam; never call `datetime.now()` elsewhere
 
 ## Commands
@@ -48,4 +53,5 @@ pytest
 - New credit paths: verify a third-party signature or hard-cap the amount.
   There is no third option.
 - All time-based rules read `app/clock.py` (never client timestamps).
-- Schema changes go through Alembic (`alembic revision --autogenerate`).
+- Schema changes go through Alembic (`alembic revision --autogenerate`);
+  CI fails if models and migrations diverge (`scripts/check_migrations.py`).
