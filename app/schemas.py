@@ -94,3 +94,12 @@ class CatalogItem(BaseModel):
     usd: Decimal
     coins: int
     label: str
+
+
+class ClientConfig(BaseModel):
+    """Server-owned constants the web client renders from, so the UI can
+    never drift from the real payout tables."""
+
+    games: dict[str, dict[str, int]]
+    checkin_rewards: list[int]
+    coins_per_usd: int

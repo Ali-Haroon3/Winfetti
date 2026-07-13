@@ -30,6 +30,10 @@ the same transaction. Never write a balance without going through
 - `app/fulfillment.py` — Tremendous behind a Protocol; stub used when no API key
 - `app/emailer.py` — verification email seam; SMTP when configured, else logs
 - `app/clock.py` — the server clock seam; never call `datetime.now()` elsewhere
+- `web/` — no-build frontends served by the API: player app (`/`) and ops
+  console (`/console`). Shared tokens in `web/static/theme.css`; the wheel
+  and check-in ladder render from `GET /v1/config`, never from constants
+  duplicated into JS.
 
 ## Commands
 

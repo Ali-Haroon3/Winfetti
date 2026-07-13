@@ -68,11 +68,32 @@ e.g. when a separate worker runs the same jobs via cron:
 `python -m app.jobs {mature-cashback|retry-approved|purge-email-tokens}`.
 Each job is also triggerable via `POST /admin/jobs/...` for ops.
 
+## Frontends
+
+Two no-build pages ship inside the image and are served by the API itself
+(same origin, no CORS, no node toolchain):
+
+- **`/` — the player app.** Anonymous device auth, the prize wheel (built
+  from `GET /v1/config`, so segment amounts always match the server's
+  payout tables), daily check-in, cap meters, email verification, and the
+  redemption catalog with live status. Denial codes surface as plain
+  sentences.
+- **`/console` — the ops console.** Unlocked by the `ADMIN_API_KEY`
+  (kept in sessionStorage): redemption queue with approve/deny, the fraud
+  dashboard, user drilldown with ban/unban, and manual job triggers.
+
+Design tokens live in `web/static/theme.css` (dark ledger direction, one
+gold accent, mono numbers, self-hosted fonts). Both pages are static files
+in `web/`; there is nothing to compile.
+
 ## API
 
 ```
+GET  /                          player web app
+GET  /console                   ops console (unlocked by ADMIN_API_KEY)
 POST /v1/auth/device            {device_id} -> {jwt}        (5/min/IP)
 GET  /v1/me                     balance, gold, boost_until, daily state
+GET  /v1/config                 public payout constants (wheel, check-in)
 POST /v1/game/claim             {game, event, idem_key}     (writes: 30/min/user)
 POST /v1/checkin                server-clock streaks
 POST /v1/me/email               {email} -> verification email (token, 24h TTL)

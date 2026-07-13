@@ -1,0 +1,190 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Winfetti</title>
+<meta name="description" content="Spin, check in, and earn coins you can redeem for real gift cards.">
+<link rel="icon" type="image/svg+xml" href="/favicon.svg">
+<link rel="stylesheet" href="/static/theme.css">
+<style>
+  /* page-specific layout; every color comes from theme.css tokens */
+  .layout{display:grid;grid-template-columns:7fr 5fr;gap:20px;margin:24px 0 48px;align-items:start}
+  .stack{display:grid;gap:20px}
+
+  .wheel-box{position:relative;max-width:420px;margin:8px auto 0}
+  .wheel-box #wheel{display:block;width:100%;height:auto}
+  #rotor{transform-origin:50% 50%}
+  .can-animate #rotor{transition:transform 3.4s cubic-bezier(.12,.64,.04,1)}
+  .wheel-box .pointer{position:absolute;top:-5px;left:50%;transform:translateX(-50%);width:26px;height:22px}
+
+  .spin-row{display:flex;flex-direction:column;gap:10px;align-items:center;margin-top:18px}
+  .spin-row .btn{min-width:220px}
+  #result{min-height:22px;font-family:var(--font-mono);font-size:15px;text-align:center}
+  #result .win{color:var(--gold)}
+
+  .ladder{display:flex;gap:6px;flex-wrap:wrap;margin-top:10px}
+  .ladder span{
+    font-family:var(--font-mono);font-size:12px;color:var(--dim);
+    border:1px solid var(--line);border-radius:var(--r);padding:3px 7px;
+  }
+  .ladder span.today{border-color:var(--gold);color:var(--gold)}
+
+  .cap{margin-bottom:14px}
+  .cap:last-child{margin-bottom:0}
+  .cap .nums{display:flex;justify-content:space-between;align-items:baseline;gap:8px}
+
+  .catalog{display:grid;grid-template-columns:1fr 1fr;gap:10px}
+  .item{border:1px solid var(--line);border-radius:var(--r);padding:12px;display:flex;flex-direction:column;gap:6px}
+  .item .usd{font-size:18px;font-weight:650}
+  .item .cost{font-family:var(--font-mono);font-size:12.5px;color:var(--dim)}
+  .item .btn{margin-top:4px}
+
+  footer{border-top:1px solid var(--line);padding:20px 0 40px;color:var(--faint);font-size:13px}
+
+  @media (max-width:920px){
+    .layout{grid-template-columns:1fr}
+    .catalog{grid-template-columns:1fr 1fr}
+  }
+  @media (max-width:480px){
+    .catalog{grid-template-columns:1fr}
+  }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <nav class="sitenav" aria-label="Site">
+    <a class="brand" href="/">
+      <svg viewBox="0 0 32 32" aria-hidden="true">
+        <circle cx="16" cy="16" r="14" fill="none" stroke="var(--gold)" stroke-width="2"/>
+        <circle cx="16" cy="16" r="10.5" fill="none" stroke="var(--gold)" stroke-width="1" opacity=".45"/>
+        <text x="16" y="21.5" text-anchor="middle" font-family="Space Mono, monospace" font-size="14" font-weight="700" fill="var(--gold)">W</text>
+      </svg>
+      Winfetti
+    </a>
+    <div class="chips" aria-live="polite">
+      <span class="chip"><span class="lbl">Coins</span> <span id="chip-balance">0</span></span>
+      <span class="chip"><span class="lbl">Streak</span> <span id="chip-streak">0</span></span>
+    </div>
+  </nav>
+
+  <div id="banner" class="banner" hidden></div>
+
+  <main id="app" class="layout" hidden>
+
+    <section class="panel" aria-labelledby="wheel-h">
+      <div class="head">
+        <h1 class="px" id="wheel-h">Spin the wheel</h1>
+        <span class="lbl" id="mult-line">No multipliers</span>
+      </div>
+      <div class="body">
+        <p class="dim small">Land a segment and the coins go straight to your balance. The server prices every win and enforces the daily caps.</p>
+        <div class="wheel-box">
+          <svg id="wheel" viewBox="0 0 400 400" role="img" aria-label="Prize wheel with eight segments from 50 coins up to a 25,000 coin jackpot"></svg>
+          <svg class="pointer" viewBox="0 0 26 22" aria-hidden="true">
+            <path d="M1 1h24L13 21Z" fill="var(--text)" stroke="var(--bg)" stroke-width="1.5"/>
+          </svg>
+        </div>
+        <div class="spin-row">
+          <button class="btn" id="spin-btn" type="button">Spin</button>
+          <p id="result" aria-live="polite"></p>
+        </div>
+      </div>
+    </section>
+
+    <div class="stack">
+
+      <section class="panel" aria-labelledby="checkin-h">
+        <div class="head">
+          <h2 class="px" id="checkin-h">Daily check-in</h2>
+          <span class="num small dim" id="checkin-day"></span>
+        </div>
+        <div class="body">
+          <div class="ladder" id="ladder" aria-hidden="true"></div>
+          <p class="note" style="margin-top:10px">Consecutive days pay more, up to 1,000 coins from day seven on.</p>
+          <div style="margin-top:12px;display:flex;gap:10px;align-items:center">
+            <button class="btn" id="checkin-btn" type="button">Check in</button>
+            <span id="checkin-msg" class="small" aria-live="polite"></span>
+          </div>
+        </div>
+      </section>
+
+      <section class="panel" aria-labelledby="caps-h">
+        <div class="head">
+          <h2 class="px" id="caps-h">Today's earnings</h2>
+          <span class="lbl">Resets at midnight UTC</span>
+        </div>
+        <div class="body">
+          <div class="cap">
+            <div class="nums small">
+              <span>Game wins</span>
+              <span class="num"><span id="cap-game">0</span> <span class="faint">/ <span id="cap-game-max">60,000</span></span></span>
+            </div>
+            <div class="meter" role="presentation"><i id="cap-game-bar" style="width:0%"></i></div>
+          </div>
+          <div class="cap">
+            <div class="nums small">
+              <span>All earnings</span>
+              <span class="num"><span id="cap-total">0</span> <span class="faint">/ <span id="cap-total-max">100,000</span></span></span>
+            </div>
+            <div class="meter" role="presentation"><i id="cap-total-bar" style="width:0%"></i></div>
+          </div>
+        </div>
+      </section>
+
+      <section class="panel" aria-labelledby="email-h">
+        <div class="head">
+          <h2 class="px" id="email-h">Email</h2>
+          <span id="email-state" class="st pending">unverified</span>
+        </div>
+        <div class="body" id="email-body">
+          <p class="dim small" style="margin-bottom:12px">Gift cards are delivered to this address, so it has to be verified before you can redeem.</p>
+          <form id="email-form">
+            <div class="field">
+              <label for="email-input">Email address</label>
+              <input type="email" id="email-input" name="email" autocomplete="email" required placeholder="you@example.com">
+            </div>
+            <button class="btn ghost" type="submit" id="email-send">Send verification email</button>
+            <span id="email-msg" class="small" aria-live="polite" style="margin-left:8px"></span>
+          </form>
+          <form id="token-form" style="margin-top:14px">
+            <div class="field">
+              <label for="token-input">Verification code from the email</label>
+              <input type="text" id="token-input" name="token" autocomplete="one-time-code" placeholder="paste the code">
+            </div>
+            <button class="btn ghost" type="submit" id="token-send">Confirm code</button>
+            <span id="token-msg" class="small" aria-live="polite" style="margin-left:8px"></span>
+          </form>
+        </div>
+      </section>
+
+      <section class="panel" aria-labelledby="rewards-h">
+        <div class="head">
+          <h2 class="px" id="rewards-h">Rewards</h2>
+          <span class="lbl">10,000 coins per dollar</span>
+        </div>
+        <div class="body">
+          <div class="catalog" id="catalog"></div>
+          <p class="note" style="margin-top:12px">Redemptions need a verified email, an account at least 7 days old, and 10 verified rewarded ads. Every order is reviewed before the gift card ships.</p>
+          <p id="redeem-msg" class="small" aria-live="polite" style="margin-top:8px"></p>
+        </div>
+        <div class="head" style="border-top:1px solid var(--line)">
+          <h2 class="px">My redemptions</h2>
+        </div>
+        <div id="redemptions"></div>
+      </section>
+
+    </div>
+  </main>
+
+  <footer>
+    <div class="wrap" style="padding:0">
+      <p>Every coin is a row in the server's ledger, and every redemption is reviewed before a real gift card ships.</p>
+    </div>
+  </footer>
+
+</div>
+<script src="/static/app.js"></script>
+</body>
+</html>

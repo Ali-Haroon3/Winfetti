@@ -1,7 +1,10 @@
 import logging
 from contextlib import asynccontextmanager
+from pathlib import Path
 
 from fastapi import FastAPI
+from fastapi.responses import FileResponse
+from fastapi.staticfiles import StaticFiles
 
 from app.admin.routes import router as admin_router
 from app.config import get_settings
@@ -68,6 +71,25 @@ def create_app() -> FastAPI:
     @app.get("/healthz")
     def healthz():
         return {"ok": True}
+
+    # Web frontends (web/): the player app and the ops console are static
+    # no-build pages served by this process, same-origin with the API.
+    # Explicit page routes rather than a "/" mount so nothing can ever
+    # shadow /v1 or /admin.
+    web_dir = Path(__file__).resolve().parent.parent / "web"
+    app.mount("/static", StaticFiles(directory=web_dir / "static"), name="static")
+
+    @app.get("/", include_in_schema=False)
+    def player_page():
+        return FileResponse(web_dir / "index.html")
+
+    @app.get("/console", include_in_schema=False)
+    def console_page():
+        return FileResponse(web_dir / "console.html")
+
+    @app.get("/favicon.svg", include_in_schema=False)
+    def favicon():
+        return FileResponse(web_dir / "static" / "favicon.svg")
 
     return app
 

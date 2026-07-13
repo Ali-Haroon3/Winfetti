@@ -6,9 +6,21 @@ from app.auth import get_current_user
 from app.config import get_settings
 from app.db import get_db
 from app.models import User
-from app.schemas import DailyState, MeResponse
+from app.payouts import CHECKIN_REWARDS, GAME_PAYOUTS
+from app.schemas import ClientConfig, DailyState, MeResponse
 
 router = APIRouter(prefix="/v1", tags=["me"])
+
+
+@router.get("/config", response_model=ClientConfig)
+def client_config():
+    """Public payout constants (they are visible in the client anyway);
+    the web frontend builds its wheel and check-in ladder from these."""
+    return ClientConfig(
+        games=GAME_PAYOUTS,
+        checkin_rewards=CHECKIN_REWARDS,
+        coins_per_usd=get_settings().coins_per_usd,
+    )
 
 
 @router.get("/me", response_model=MeResponse)

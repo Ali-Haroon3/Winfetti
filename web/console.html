@@ -1,0 +1,206 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Console · Winfetti</title>
+<meta name="robots" content="noindex">
+<link rel="icon" type="image/svg+xml" href="/favicon.svg">
+<link rel="stylesheet" href="/static/theme.css">
+<style>
+  /* page-specific layout; every color comes from theme.css tokens */
+  .console{margin:20px 0 60px;display:grid;gap:16px}
+  .toolbar{display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap}
+  .toolbar .controls{display:flex;gap:8px;align-items:center;flex-wrap:wrap}
+  .toolbar select,.toolbar input{width:auto}
+  .scroll{overflow-x:auto}
+  .kv{display:grid;grid-template-columns:max-content 1fr;gap:6px 18px;font-size:13px;padding:16px}
+  .kv dt{color:var(--faint);font-family:var(--font-mono);font-size:11px;letter-spacing:.14em;text-transform:uppercase;align-self:baseline}
+  .kv dd{margin:0;font-family:var(--font-mono)}
+  .cols{display:grid;grid-template-columns:1fr 1fr 1fr;gap:16px}
+  .gate{max-width:420px;margin:10vh auto}
+  .rowmsg{font-size:12.5px}
+  .idlink{background:none;border:none;padding:0;font:inherit;color:var(--gold);cursor:pointer;font-family:var(--font-mono)}
+  .idlink:hover{text-decoration:underline}
+  @media (max-width:920px){.cols{grid-template-columns:1fr}}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <nav class="sitenav" aria-label="Site">
+    <a class="brand" href="/console">
+      <svg viewBox="0 0 32 32" aria-hidden="true">
+        <circle cx="16" cy="16" r="14" fill="none" stroke="var(--gold)" stroke-width="2"/>
+        <circle cx="16" cy="16" r="10.5" fill="none" stroke="var(--gold)" stroke-width="1" opacity=".45"/>
+        <text x="16" y="21.5" text-anchor="middle" font-family="Space Mono, monospace" font-size="14" font-weight="700" fill="var(--gold)">W</text>
+      </svg>
+      Winfetti console
+    </a>
+    <div class="chips">
+      <button class="btn ghost sm" id="signout" type="button" hidden>Forget key</button>
+    </div>
+  </nav>
+
+  <section class="gate panel" id="gate" aria-labelledby="gate-h">
+    <div class="head"><h1 class="px" id="gate-h">Admin key</h1></div>
+    <div class="body">
+      <form id="gate-form">
+        <div class="field">
+          <label for="key-input">X-Admin-Key</label>
+          <input type="password" id="key-input" autocomplete="off" required>
+        </div>
+        <button class="btn" type="submit">Open console</button>
+        <p id="gate-msg" class="err" aria-live="polite" style="margin-top:10px"></p>
+        <p class="note" style="margin-top:10px">The key stays in this browser session and is sent only to this server.</p>
+      </form>
+    </div>
+  </section>
+
+  <main class="console" id="console" hidden>
+
+    <div class="tabs" role="tablist" aria-label="Console sections">
+      <button role="tab" id="tab-queue" aria-selected="true" aria-controls="sec-queue" type="button">Queue</button>
+      <button role="tab" id="tab-fraud" aria-selected="false" aria-controls="sec-fraud" type="button">Fraud</button>
+      <button role="tab" id="tab-users" aria-selected="false" aria-controls="sec-users" type="button">Users</button>
+      <button role="tab" id="tab-jobs" aria-selected="false" aria-controls="sec-jobs" type="button">Jobs</button>
+    </div>
+
+    <section id="sec-queue" role="tabpanel" aria-labelledby="tab-queue">
+      <div class="toolbar" style="margin-bottom:12px">
+        <h1 class="px">Redemption queue</h1>
+        <div class="controls">
+          <label class="lbl" for="q-status">Status</label>
+          <select id="q-status">
+            <option value="pending" selected>pending</option>
+            <option value="approved">approved</option>
+            <option value="sent">sent</option>
+            <option value="denied">denied</option>
+          </select>
+          <button class="btn ghost sm" id="q-refresh" type="button">Refresh</button>
+        </div>
+      </div>
+      <div class="panel scroll">
+        <table>
+          <thead><tr>
+            <th>Age</th><th>Redemption</th><th>User</th><th>Sku</th>
+            <th class="num">USD</th><th class="num">Coins</th><th>Order</th><th></th>
+          </tr></thead>
+          <tbody id="q-rows"></tbody>
+        </table>
+        <p class="empty" id="q-empty" hidden>Nothing here.</p>
+      </div>
+      <p class="note" style="margin-top:8px">Approve ships the gift card through Tremendous. Deny refunds the hold and is only possible while a row is still pending. Approved rows that failed fulfillment are retried automatically by the scheduler.</p>
+    </section>
+
+    <section id="sec-fraud" role="tabpanel" aria-labelledby="tab-fraud" hidden>
+      <div class="toolbar" style="margin-bottom:12px">
+        <h1 class="px">Fraud</h1>
+        <div class="controls">
+          <label class="lbl" for="f-hours">Window</label>
+          <select id="f-hours">
+            <option value="24" selected>24 hours</option>
+            <option value="72">3 days</option>
+            <option value="168">7 days</option>
+          </select>
+          <button class="btn ghost sm" id="f-refresh" type="button">Refresh</button>
+        </div>
+      </div>
+      <div class="cols">
+        <div class="panel scroll">
+          <div class="head"><h2 class="px">Denials by kind</h2></div>
+          <table><tbody id="f-kinds"></tbody></table>
+          <p class="empty" id="f-kinds-empty" hidden>No events in this window.</p>
+        </div>
+        <div class="panel scroll">
+          <div class="head"><h2 class="px">Top denied IPs</h2></div>
+          <table><tbody id="f-ips"></tbody></table>
+          <p class="empty" id="f-ips-empty" hidden>No denied IPs.</p>
+        </div>
+        <div class="panel scroll">
+          <div class="head"><h2 class="px">Top risk users</h2></div>
+          <table><tbody id="f-risky"></tbody></table>
+          <p class="empty" id="f-risky-empty" hidden>Nobody has a risk score.</p>
+        </div>
+      </div>
+      <div class="toolbar" style="margin:20px 0 12px">
+        <h2 class="px">Recent events</h2>
+        <div class="controls">
+          <label class="lbl" for="f-kind">Kind</label>
+          <input type="text" id="f-kind" placeholder="all kinds" style="max-width:220px">
+          <button class="btn ghost sm" id="f-events-refresh" type="button">Load</button>
+        </div>
+      </div>
+      <div class="panel scroll">
+        <table>
+          <thead><tr><th>When</th><th>Kind</th><th>User</th><th>IP</th><th>Detail</th></tr></thead>
+          <tbody id="f-events"></tbody>
+        </table>
+        <p class="empty" id="f-events-empty" hidden>No events.</p>
+      </div>
+    </section>
+
+    <section id="sec-users" role="tabpanel" aria-labelledby="tab-users" hidden>
+      <div class="toolbar" style="margin-bottom:12px">
+        <h1 class="px">Users</h1>
+        <div class="controls">
+          <label class="lbl" for="u-id">User id</label>
+          <input type="text" id="u-id" placeholder="uuid" style="min-width:320px">
+          <button class="btn ghost sm" id="u-load" type="button">Load</button>
+        </div>
+      </div>
+      <p id="u-msg" class="err" aria-live="polite"></p>
+      <div class="panel" id="u-panel" hidden>
+        <div class="head">
+          <h2 class="px" id="u-title">User</h2>
+          <div>
+            <button class="btn danger sm" id="u-ban" type="button">Ban</button>
+            <button class="btn ghost sm" id="u-unban" type="button">Unban</button>
+          </div>
+        </div>
+        <dl class="kv" id="u-kv"></dl>
+      </div>
+    </section>
+
+    <section id="sec-jobs" role="tabpanel" aria-labelledby="tab-jobs" hidden>
+      <h1 class="px" style="margin-bottom:12px">Jobs</h1>
+      <div class="panel">
+        <div class="row">
+          <div>
+            <p class="small" style="font-weight:600">mature-cashback</p>
+            <p class="note">Credits pending cashback whose return window has passed.</p>
+          </div>
+          <div style="display:flex;gap:10px;align-items:center">
+            <span class="rowmsg mono" id="j-mature-cashback"></span>
+            <button class="btn ghost sm" data-job="mature-cashback" type="button">Run</button>
+          </div>
+        </div>
+        <div class="row">
+          <div>
+            <p class="small" style="font-weight:600">retry-approved</p>
+            <p class="note">Re-drives fulfillment for redemptions stuck in approved.</p>
+          </div>
+          <div style="display:flex;gap:10px;align-items:center">
+            <span class="rowmsg mono" id="j-retry-approved"></span>
+            <button class="btn ghost sm" data-job="retry-approved" type="button">Run</button>
+          </div>
+        </div>
+        <div class="row">
+          <div>
+            <p class="small" style="font-weight:600">purge-email-tokens</p>
+            <p class="note">Deletes verification tokens long past expiry.</p>
+          </div>
+          <div style="display:flex;gap:10px;align-items:center">
+            <span class="rowmsg mono" id="j-purge-email-tokens"></span>
+            <button class="btn ghost sm" data-job="purge-email-tokens" type="button">Run</button>
+          </div>
+        </div>
+      </div>
+      <p class="note" style="margin-top:8px">The scheduler runs all three on its own. Manual runs are safe: rows are claimed with locks and every credit is idempotent.</p>
+    </section>
+
+  </main>
+</div>
+<script src="/static/console.js"></script>
+</body>
+</html>
