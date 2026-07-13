@@ -82,9 +82,14 @@ Two no-build pages ship inside the image and are served by the API itself
   (kept in sessionStorage): redemption queue with approve/deny, the fraud
   dashboard, user drilldown with ban/unban, and manual job triggers.
 
-Design tokens live in `web/static/theme.css` (dark ledger direction, one
-gold accent, mono numbers, self-hosted fonts). Both pages are static files
-in `web/`; there is nothing to compile.
+The design language is Seat Layer's, captured as a reusable skill in
+`.claude/skills/seat-layer-design/`: warm paper and ink, hairline
+structure, one wine accent, mono numbers, self-hosted fonts. Depth comes
+from paper-cutout extrusion on an isometric plane (the wheel is a real
+tilted disc with thickness, sitting on a platform beside coin stacks;
+`prefers-reduced-motion` gets the flat view). Tokens live in
+`web/static/theme.css`. Both pages are static files in `web/`; there is
+nothing to compile.
 
 ## API
 

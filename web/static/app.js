@@ -1,5 +1,7 @@
 /* Winfetti player app. Talks to the same-origin API; the server is the
-   truth for every number on this page. */
+   truth for every number on this page. The wheel scene follows the
+   seat-layer-design skill: one SVG on an isometric plane, depth drawn as
+   offset extrusion copies (#D9D3C6 platform sides, #9A8F73 coin edges). */
 (() => {
   "use strict";
 
@@ -64,64 +66,107 @@
   }
 
   // ------------------------------------------------------------------
-  // Wheel: geometry is presentation, amounts come from /v1/config.
+  // The wheel scene. Geometry is presentation; amounts come from
+  // /v1/config so the segments always match the server's payout table.
+
+  const CX = 320, CY = 270, R = 186;
+  // the plane is rotated -33deg, so "screen down" in local svg coords is
+  // (-sin33, cos33); extrusion sides offset along that vector
+  const EX = { x: -0.545, y: 0.839 };
+  const off = (d) => `translate(${(EX.x * d).toFixed(1)},${(EX.y * d).toFixed(1)})`;
+  const at = (x, y, d) => [x + EX.x * d, y + EX.y * d];
 
   const WHEEL_ORDER = [
     "seg_50", "seg_1000", "seg_100", "seg_5000",
     "seg_250", "seg_2500", "seg_500", "jackpot",
   ];
-  const SEG_FILLS = ["#2B2416", "#352C1B"]; // documented in theme.css
+  const SEG_FILLS = ["var(--panel)", "var(--raise)"];
   let segments = []; // {event, coins, angle}
   let rotation = 0;
   let spinning = false;
+
+  function coinStack(x, y, count, delay) {
+    // a stack of coins as extruded cylinders, rising along the plane normal
+    let g = `<g class="fadein" style="animation-delay:${delay}ms">`;
+    for (let i = 0; i < count; i++) {
+      const lift = -i * 8;
+      const [sx, sy] = at(x, y, lift + 8);
+      const [tx, ty] = at(x, y, lift);
+      g += `<circle cx="${sx.toFixed(1)}" cy="${sy.toFixed(1)}" r="30" fill="#9A8F73"/>`;
+      g += `<circle cx="${tx.toFixed(1)}" cy="${ty.toFixed(1)}" r="30" fill="var(--sand)" stroke="rgba(26,24,20,.25)" stroke-width=".8"/>`;
+      g += `<circle cx="${tx.toFixed(1)}" cy="${ty.toFixed(1)}" r="21" fill="none" stroke="#9A8F73" stroke-width="1" opacity=".7"/>`;
+    }
+    return g + "</g>";
+  }
 
   function buildWheel(wheelPayouts) {
     const events = WHEEL_ORDER.filter((e) => e in wheelPayouts).concat(
       Object.keys(wheelPayouts).filter((e) => !WHEEL_ORDER.includes(e))
     );
     const svg = $("wheel");
-    const cx = 200, cy = 200, r = 186;
     const step = 360 / events.length;
     const pt = (deg, rad) => {
       const t = ((deg - 90) * Math.PI) / 180;
-      return [cx + rad * Math.cos(t), cy + rad * Math.sin(t)];
+      return [CX + rad * Math.cos(t), CY + rad * Math.sin(t)];
     };
 
-    let inner = `<circle cx="${cx}" cy="${cy}" r="196" fill="var(--panel)"/>`;
+    // platform tile the whole scene sits on
+    const tile = `x="80" y="30" width="540" height="480" rx="18"`;
+    let inner = `<g class="fadein">`;
+    inner += `<rect class="tile-side" ${tile} transform="${off(26)}" fill="#D9D3C6"/>`;
+    inner += `<rect ${tile} fill="var(--panel2)" stroke="var(--line2)"/>`;
+    inner += `</g>`;
+
+    // the wheel: a disc with a static extruded side; only the top spins
+    inner += `<g class="fadein" style="animation-delay:60ms">`;
+    inner += `<circle cx="${CX}" cy="${CY}" r="190" transform="${off(16)}" fill="#D9D3C6"/>`;
     inner += `<g id="rotor">`;
     segments = events.map((event, i) => {
       const angle = i * step;
       const coins = wheelPayouts[event];
       const jackpot = event === "jackpot";
-      const [x1, y1] = pt(angle - step / 2, r);
-      const [x2, y2] = pt(angle + step / 2, r);
-      const fill = jackpot ? "var(--gold)" : SEG_FILLS[i % 2];
-      const text = jackpot ? "var(--gold-ink)" : "var(--text)";
-      inner += `<path d="M${cx},${cy} L${x1.toFixed(2)},${y1.toFixed(2)} ` +
-        `A${r},${r} 0 0 1 ${x2.toFixed(2)},${y2.toFixed(2)} Z" ` +
-        `fill="${fill}" stroke="var(--line)" stroke-width="1"/>`;
-      inner += `<text x="${cx}" y="${cy - 132}" data-angle="${angle}" ` +
+      const [x1, y1] = pt(angle - step / 2, R);
+      const [x2, y2] = pt(angle + step / 2, R);
+      const fill = jackpot ? "var(--accent)" : SEG_FILLS[i % 2];
+      const text = jackpot ? "var(--panel)" : "var(--text)";
+      inner += `<path d="M${CX},${CY} L${x1.toFixed(2)},${y1.toFixed(2)} ` +
+        `A${R},${R} 0 0 1 ${x2.toFixed(2)},${y2.toFixed(2)} Z" ` +
+        `fill="${fill}" stroke="var(--line2)" stroke-width="1"/>`;
+      inner += `<text x="${CX}" y="${CY - 132}" data-angle="${angle}" ` +
         `dominant-baseline="middle" text-anchor="middle" font-family="Space Mono, monospace" ` +
-        `font-size="${jackpot ? 15 : 16}" font-weight="700" fill="${text}">${fmt(coins)}</text>`;
+        `font-size="${jackpot ? 16 : 17}" font-weight="700" fill="${text}">${fmt(coins)}</text>`;
       return { event, coins, angle };
     });
     inner += `</g>`;
-    inner += `<circle cx="${cx}" cy="${cy}" r="192" fill="none" stroke="var(--gold)" stroke-width="3"/>`;
-    inner += `<circle cx="${cx}" cy="${cy}" r="26" fill="var(--bg)" stroke="var(--line2)" stroke-width="1"/>`;
+    inner += `<circle cx="${CX}" cy="${CY}" r="190" fill="none" stroke="var(--text)" stroke-width="2"/>`;
+    inner += `<circle cx="${CX}" cy="${CY}" r="26" transform="${off(5)}" fill="#D9D3C6"/>`;
+    inner += `<circle cx="${CX}" cy="${CY}" r="26" fill="var(--panel)" stroke="var(--line2)"/>`;
+    // the pointer, a small extruded ink flag at the top of the disc
+    inner += `<path d="M305,50 h30 L320,88 Z" transform="${off(6)}" fill="#D9D3C6"/>`;
+    inner += `<path d="M305,50 h30 L320,88 Z" fill="var(--text)"/>`;
+    inner += `</g>`;
+
+    // today's winnings, sitting on the same table
+    inner += coinStack(548, 178, 4, 120);
+    inner += coinStack(562, 352, 3, 180);
+
     svg.innerHTML = inner;
     orientLabels();
-    if (!reducedMotion) $("wheel").parentElement.classList.add("can-animate");
+    if (!reducedMotion) svg.parentElement.classList.add("can-animate");
   }
 
   function orientLabels() {
-    // Labels whose segment rests in the lower half get flipped 180 so
-    // nothing on the stopped wheel reads upside down. Depends on the
-    // current rotation, so it reruns after every spin.
+    // Labels that would read upside down on the stopped wheel get flipped
+    // 180. "Upside down" is judged in screen space: the plane's rotateZ
+    // shifts every local angle by -33deg (except in the flat
+    // reduced-motion view). Reruns after every spin.
+    const planeShift = reducedMotion ? 0 : 33;
     for (const label of $("wheel").querySelectorAll("text[data-angle]")) {
       const angle = Number(label.dataset.angle);
       const resting = (((angle + rotation) % 360) + 360) % 360;
-      const flip = resting > 90 && resting < 270 ? ` rotate(180 200 68)` : "";
-      label.setAttribute("transform", `rotate(${angle} 200 200)${flip}`);
+      const seen = (((resting - planeShift) % 360) + 360) % 360;
+      const flip = seen > 90 && seen < 270 ? ` rotate(180 ${CX} ${CY - 132})` : "";
+      label.setAttribute("transform", `rotate(${angle} ${CX} ${CY})${flip}`);
     }
   }
 
@@ -182,11 +227,11 @@
     };
 
     const rotor = $("rotor");
-    const jitter = (Math.random() - 0.5) * 28;
+    const jitter = (Math.random() - 0.5) * 20;
     const delta = ((-segment.angle - rotation) % 360 + 360) % 360;
     rotation += 3 * 360 + delta + jitter;
     if (reducedMotion) {
-      rotor.setAttribute("transform", `rotate(${rotation} 200 200)`);
+      rotor.setAttribute("transform", `rotate(${rotation} ${CX} ${CY})`);
       orientLabels();
       finish();
       return;

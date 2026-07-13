@@ -2,40 +2,56 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <title>Winfetti</title>
 <meta name="description" content="Spin, check in, and earn coins you can redeem for real gift cards.">
 <link rel="icon" type="image/svg+xml" href="/favicon.svg">
 <link rel="stylesheet" href="/static/theme.css">
 <style>
-  /* page-specific layout; every color comes from theme.css tokens */
+  /* page-specific layout; colors come from theme.css tokens, plus the
+     documented illustration-only extrusion shades (#D9D3C6, #9A8F73) */
   .layout{display:grid;grid-template-columns:7fr 5fr;gap:20px;margin:24px 0 48px;align-items:start}
   .stack{display:grid;gap:20px}
 
-  .wheel-box{position:relative;max-width:420px;margin:8px auto 0}
-  .wheel-box #wheel{display:block;width:100%;height:auto}
-  #rotor{transform-origin:50% 50%}
+  /* the wheel on an isometric plane, paper-cutout extrusion (see
+     .claude/skills/seat-layer-design). The edge fade dissolves the
+     illustration into the page. */
+  .stage3d{position:relative;height:430px;overflow:hidden;margin-top:6px;
+    -webkit-mask-image:linear-gradient(90deg,transparent,#000 8%,#000 92%,transparent);
+    mask-image:linear-gradient(90deg,transparent,#000 8%,#000 92%,transparent)}
+  .plane{position:absolute;inset:0;
+    transform:perspective(1400px) rotateX(52deg) rotateZ(-33deg) scale(1.42)}
+  #wheel{display:block;width:100%;height:100%;
+    filter:drop-shadow(12px 18px 18px rgba(26,24,20,.14))} /* sells the tilt */
+  #rotor{transform-origin:320px 270px;transform-box:view-box}
   .can-animate #rotor{transition:transform 3.4s cubic-bezier(.12,.64,.04,1)}
-  .wheel-box .pointer{position:absolute;top:-5px;left:50%;transform:translateX(-50%);width:26px;height:22px}
+  #wheel .fadein{opacity:0;animation:fadein .6s ease forwards}
+  @keyframes fadein{from{opacity:0}to{opacity:1}}
+  @media(max-width:960px){.stage3d{height:360px}.plane{transform:perspective(1400px) rotateX(52deg) rotateZ(-33deg) scale(1.42)}}
+  @media(prefers-reduced-motion:reduce){
+    .plane{transform:none}
+    #wheel .fadein{opacity:1;animation:none}
+    #wheel{filter:none}
+  }
 
-  .spin-row{display:flex;flex-direction:column;gap:10px;align-items:center;margin-top:18px}
+  .spin-row{display:flex;flex-direction:column;gap:10px;align-items:center;margin-top:6px}
   .spin-row .btn{min-width:220px}
   #result{min-height:22px;font-family:var(--font-mono);font-size:15px;text-align:center}
-  #result .win{color:var(--gold)}
+  #result .win{color:var(--teal2)}
 
   .ladder{display:flex;gap:6px;flex-wrap:wrap;margin-top:10px}
   .ladder span{
     font-family:var(--font-mono);font-size:12px;color:var(--dim);
-    border:1px solid var(--line);border-radius:var(--r);padding:3px 7px;
+    border:1px solid var(--line);border-radius:var(--r);padding:3px 7px;background:var(--panel2);
   }
-  .ladder span.today{border-color:var(--gold);color:var(--gold)}
+  .ladder span.today{border-color:var(--accent);color:var(--accent);background:rgba(138,59,74,.06)}
 
   .cap{margin-bottom:14px}
   .cap:last-child{margin-bottom:0}
   .cap .nums{display:flex;justify-content:space-between;align-items:baseline;gap:8px}
 
   .catalog{display:grid;grid-template-columns:1fr 1fr;gap:10px}
-  .item{border:1px solid var(--line);border-radius:var(--r);padding:12px;display:flex;flex-direction:column;gap:6px}
+  .item{border:1px solid var(--line);border-radius:var(--r);padding:12px;display:flex;flex-direction:column;gap:6px;background:var(--panel2)}
   .item .usd{font-size:18px;font-weight:650}
   .item .cost{font-family:var(--font-mono);font-size:12.5px;color:var(--dim)}
   .item .btn{margin-top:4px}
@@ -57,9 +73,9 @@
   <nav class="sitenav" aria-label="Site">
     <a class="brand" href="/">
       <svg viewBox="0 0 32 32" aria-hidden="true">
-        <circle cx="16" cy="16" r="14" fill="none" stroke="var(--gold)" stroke-width="2"/>
-        <circle cx="16" cy="16" r="10.5" fill="none" stroke="var(--gold)" stroke-width="1" opacity=".45"/>
-        <text x="16" y="21.5" text-anchor="middle" font-family="Space Mono, monospace" font-size="14" font-weight="700" fill="var(--gold)">W</text>
+        <circle cx="16" cy="16" r="15" fill="var(--accent)"/>
+        <circle cx="16" cy="16" r="10.5" fill="none" stroke="var(--bg)" stroke-width="1" opacity=".55"/>
+        <text x="16" y="21.5" text-anchor="middle" font-family="Space Mono, monospace" font-size="14" font-weight="700" fill="var(--bg)">W</text>
       </svg>
       Winfetti
     </a>
@@ -80,14 +96,13 @@
       </div>
       <div class="body">
         <p class="dim small">Land a segment and the coins go straight to your balance. The server prices every win and enforces the daily caps.</p>
-        <div class="wheel-box">
-          <svg id="wheel" viewBox="0 0 400 400" role="img" aria-label="Prize wheel with eight segments from 50 coins up to a 25,000 coin jackpot"></svg>
-          <svg class="pointer" viewBox="0 0 26 22" aria-hidden="true">
-            <path d="M1 1h24L13 21Z" fill="var(--text)" stroke="var(--bg)" stroke-width="1.5"/>
-          </svg>
+        <div class="stage3d">
+          <div class="plane">
+            <svg id="wheel" viewBox="0 0 640 540" role="img" aria-label="Prize wheel with eight segments from 50 coins up to a 25,000 coin jackpot, on a table beside two stacks of coins"></svg>
+          </div>
         </div>
         <div class="spin-row">
-          <button class="btn" id="spin-btn" type="button">Spin</button>
+          <button class="btn accent" id="spin-btn" type="button">Spin</button>
           <p id="result" aria-live="polite"></p>
         </div>
       </div>
