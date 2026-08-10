@@ -3,15 +3,30 @@ from datetime import timedelta
 
 from fastapi import APIRouter, Body, Depends, HTTPException, Query
 from sqlalchemy import func, select
+from sqlalchemy.exc import NoResultFound
 from sqlalchemy.orm import Session
 
 from app import clock, jobs, ledger
 from app.auth import require_admin
+from app.config import get_settings
 from app.db import get_db
 from app.fraud import log_fraud_event
-from app.models import AdReceipt, FraudEvent, LedgerEntry, Redemption, User
+from app.models import (
+    AdReceipt,
+    CashbackCredit,
+    FraudEvent,
+    LedgerEntry,
+    Redemption,
+    User,
+)
 from app.routes.redemptions import get_fulfillment
-from app.schemas import AdminRedemptionResponse
+from app.schemas import (
+    AdminAdjustRequest,
+    AdminAdjustResponse,
+    AdminLedgerEntryItem,
+    AdminLedgerPage,
+    AdminRedemptionResponse,
+)
 from app.services import DomainError, approve_redemption, deny_redemption
 
 router = APIRouter(
@@ -189,8 +204,6 @@ def set_user_status(
     status: str = Body(embed=True, pattern="^(active|banned)$"),
     db: Session = Depends(get_db),
 ):
-    from sqlalchemy.exc import NoResultFound
-
     try:
         user = ledger.lock_user(db, user_id)
     except NoResultFound:
@@ -207,6 +220,166 @@ def set_user_status(
     return {"user_id": str(user.id), "status": user.status, "previous": previous}
 
 
+@router.get("/users/{user_id}/ledger", response_model=AdminLedgerPage)
+def user_ledger(
+    user_id: uuid.UUID,
+    limit: int = Query(default=100, ge=1, le=500),
+    before_id: int | None = Query(default=None, ge=1),
+    kind: str | None = Query(default=None, max_length=64),
+    db: Session = Depends(get_db),
+):
+    """Full ledger for one user, newest first, idem keys included — the
+    audit view for support disputes ("where did these coins come from?")."""
+    if db.get(User, user_id) is None:
+        raise HTTPException(status_code=404, detail="not_found")
+    stmt = (
+        select(LedgerEntry)
+        .where(LedgerEntry.user_id == user_id)
+        .order_by(LedgerEntry.id.desc())
+        .limit(limit)
+    )
+    if before_id is not None:
+        stmt = stmt.where(LedgerEntry.id < before_id)
+    if kind is not None:
+        stmt = stmt.where(LedgerEntry.kind == kind)
+    rows = db.execute(stmt).scalars().all()
+    return AdminLedgerPage(
+        entries=[AdminLedgerEntryItem.model_validate(r) for r in rows],
+        next_cursor=rows[-1].id if len(rows) == limit else None,
+    )
+
+
+@router.post("/users/{user_id}/adjust", response_model=AdminAdjustResponse)
+def adjust_balance(
+    user_id: uuid.UUID,
+    body: AdminAdjustRequest,
+    db: Session = Depends(get_db),
+):
+    """Manual credit/debit for support cases — the only human credit path,
+    so it goes through the ledger like everything else: row lock, idem_key,
+    and a fraud_events row as the audit trail."""
+    settings = get_settings()
+    if body.amount == 0:
+        raise HTTPException(status_code=400, detail="zero_amount")
+    if abs(body.amount) > settings.admin_adjust_max_coins:
+        raise HTTPException(status_code=400, detail="adjustment_too_large")
+
+    try:
+        user = ledger.lock_user(db, user_id)
+    except NoResultFound:
+        db.rollback()
+        raise HTTPException(status_code=404, detail="not_found")
+
+    try:
+        result = ledger.apply(
+            db,
+            user,
+            body.amount,
+            "admin_adjust",
+            idem_key=f"admin_adjust:{user_id}:{body.idem_key}",
+            ref=body.reason,
+        )
+    except ledger.InsufficientBalance:
+        db.rollback()
+        raise HTTPException(status_code=400, detail="insufficient_balance")
+
+    if result.created:
+        log_fraud_event(
+            db,
+            "admin_adjust",
+            user_id=user.id,
+            detail={"amount": body.amount, "reason": body.reason},
+        )
+    db.commit()
+    return AdminAdjustResponse(
+        user_id=user_id,
+        amount=body.amount if result.created else 0,
+        balance=result.balance_after,
+        replay=not result.created,
+    )
+
+
+@router.get("/stats/economy")
+def economy_stats(db: Session = Depends(get_db)):
+    """One screen of the numbers that run the business: outstanding coin
+    liability, committed redemption dollars, and today's credit flow."""
+    day_start = clock.day_start_utc()
+
+    coins_outstanding = db.execute(
+        select(func.coalesce(func.sum(User.balance), 0))
+    ).scalar_one()
+    total_users, new_users_today = db.execute(
+        select(
+            func.count(),
+            func.coalesce(func.count().filter(User.created_at >= day_start), 0),
+        ).select_from(User)
+    ).one()
+    active_users_today = db.execute(
+        select(func.count(func.distinct(LedgerEntry.user_id))).where(
+            LedgerEntry.created_at >= day_start
+        )
+    ).scalar_one()
+
+    credited_by_kind = dict(
+        db.execute(
+            select(LedgerEntry.kind, func.sum(LedgerEntry.amount))
+            .where(LedgerEntry.created_at >= day_start, LedgerEntry.amount > 0)
+            .group_by(LedgerEntry.kind)
+        ).all()
+    )
+    debited_today = db.execute(
+        select(func.coalesce(func.sum(-LedgerEntry.amount), 0)).where(
+            LedgerEntry.created_at >= day_start, LedgerEntry.amount < 0
+        )
+    ).scalar_one()
+
+    # pending holds coins; approved is committed dollars not yet shipped
+    open_count, open_coins, open_usd = db.execute(
+        select(
+            func.count(),
+            func.coalesce(func.sum(Redemption.coins), 0),
+            func.coalesce(func.sum(Redemption.usd), 0),
+        ).where(Redemption.status.in_(["pending", "approved"]))
+    ).one()
+    sent_today_usd = db.execute(
+        select(func.coalesce(func.sum(Redemption.usd), 0)).where(
+            Redemption.status == "sent", Redemption.reviewed_at >= day_start
+        )
+    ).scalar_one()
+
+    pending_cashback = db.execute(
+        select(func.coalesce(func.sum(CashbackCredit.coins), 0)).where(
+            CashbackCredit.status == "pending"
+        )
+    ).scalar_one()
+
+    return {
+        "coins_outstanding": coins_outstanding,
+        "pending_cashback_coins": pending_cashback,
+        "users": {
+            "total": total_users,
+            "new_today": new_users_today,
+            "active_today": active_users_today,
+        },
+        "today": {
+            "credited_by_kind": credited_by_kind,
+            "credited_total": sum(credited_by_kind.values()),
+            "debited_total": debited_today,
+        },
+        "redemption_liability": {
+            "open_count": open_count,
+            "coins_held": open_coins,
+            "usd_committed": open_usd,
+        },
+        "sent_today_usd": sent_today_usd,
+    }
+
+
 @router.post("/jobs/mature-cashback")
 def run_mature_cashback():
     return {"matured": jobs.mature_cashback()}
+
+
+@router.post("/jobs/audit-ledger")
+def run_audit_ledger():
+    return jobs.audit_ledger()

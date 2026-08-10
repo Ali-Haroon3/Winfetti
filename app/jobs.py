@@ -1,18 +1,20 @@
 """Scheduled jobs. Run from cron / Fly machines:
 
     python -m app.jobs mature-cashback
+    python -m app.jobs audit-ledger
 
-Also triggerable via POST /admin/jobs/mature-cashback.
+Also triggerable via POST /admin/jobs/{mature-cashback,audit-ledger}.
 """
 
 import logging
 import sys
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 
 from app import clock, ledger
 from app.db import SessionLocal
-from app.models import CashbackCredit
+from app.fraud import log_fraud_event
+from app.models import CashbackCredit, LedgerEntry, User
 
 logger = logging.getLogger(__name__)
 
@@ -67,11 +69,99 @@ def mature_cashback(session_factory=SessionLocal) -> int:
     return matured
 
 
+def audit_ledger(session_factory=SessionLocal) -> dict:
+    """Prove the maintained balance column against the append-only ledger:
+    for every user, users.balance == SUM(ledger.amount) and the newest
+    entry's balance_after agrees.
+
+    Pass 1 scans without locks, so a claim landing between reads can throw
+    false positives; every candidate is therefore re-checked under the user
+    row lock — the lock every writer holds — before being reported. Confirmed
+    mismatches are logged to fraud_events as ledger_integrity_mismatch.
+    """
+    with session_factory() as session:
+        checked = session.execute(
+            select(func.count()).select_from(User)
+        ).scalar_one()
+        sum_mismatch = (
+            session.execute(
+                select(User.id)
+                .outerjoin(LedgerEntry, LedgerEntry.user_id == User.id)
+                .group_by(User.id, User.balance)
+                .having(
+                    User.balance != func.coalesce(func.sum(LedgerEntry.amount), 0)
+                )
+            )
+            .scalars()
+            .all()
+        )
+        newest = (
+            select(
+                LedgerEntry.user_id,
+                LedgerEntry.balance_after,
+                func.row_number()
+                .over(
+                    partition_by=LedgerEntry.user_id,
+                    order_by=LedgerEntry.id.desc(),
+                )
+                .label("rn"),
+            )
+        ).subquery()
+        tail_mismatch = (
+            session.execute(
+                select(User.id)
+                .join(newest, newest.c.user_id == User.id)
+                .where(newest.c.rn == 1, newest.c.balance_after != User.balance)
+            )
+            .scalars()
+            .all()
+        )
+
+    mismatches = []
+    for user_id in sorted(set(sum_mismatch) | set(tail_mismatch)):
+        with session_factory() as session:
+            user = ledger.lock_user(session, user_id)
+            ledger_sum = session.execute(
+                select(func.coalesce(func.sum(LedgerEntry.amount), 0)).where(
+                    LedgerEntry.user_id == user_id
+                )
+            ).scalar_one()
+            tail = session.execute(
+                select(LedgerEntry.balance_after)
+                .where(LedgerEntry.user_id == user_id)
+                .order_by(LedgerEntry.id.desc())
+                .limit(1)
+            ).scalar_one_or_none()
+            if user.balance == ledger_sum and (tail is None or tail == user.balance):
+                continue  # pass-1 caught a mid-write snapshot; consistent under the lock
+            detail = {
+                "balance": user.balance,
+                "ledger_sum": ledger_sum,
+                "last_balance_after": tail,
+            }
+            log_fraud_event(
+                session, "ledger_integrity_mismatch", user_id=user_id, detail=detail
+            )
+            session.commit()
+            mismatches.append({"user_id": str(user_id), **detail})
+
+    if mismatches:
+        logger.error("ledger integrity: %d mismatched users", len(mismatches))
+    return {"checked": checked, "mismatches": mismatches}
+
+
 if __name__ == "__main__":
     logging.basicConfig(level=logging.INFO)
     job = sys.argv[1] if len(sys.argv) > 1 else ""
     if job == "mature-cashback":
         print(f"matured: {mature_cashback()}")
+    elif job == "audit-ledger":
+        report = audit_ledger()
+        print(f"checked: {report['checked']}, mismatches: {report['mismatches']}")
+        sys.exit(1 if report["mismatches"] else 0)
     else:
-        print("usage: python -m app.jobs mature-cashback", file=sys.stderr)
+        print(
+            "usage: python -m app.jobs {mature-cashback,audit-ledger}",
+            file=sys.stderr,
+        )
         sys.exit(2)
