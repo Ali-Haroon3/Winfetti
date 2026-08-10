@@ -213,6 +213,61 @@ def do_checkin(session: Session, user_id: uuid.UUID) -> CheckinResult:
 
 
 # ---------------------------------------------------------------------------
+# Admin adjustments
+
+
+@dataclass
+class AdjustResult:
+    applied: int
+    balance: int
+    replay: bool
+
+
+def adjust_balance(
+    session: Session, user_id: uuid.UUID, amount: int, reason: str, idem_key: str
+) -> AdjustResult:
+    """Manual support credit/debit — the only human credit path, so it rides
+    the same rails as every other coin move: row lock, scoped idem_key, hard
+    cap either direction, and a fraud_events row as the audit trail.
+
+    The reason lands in ledger.ref for the admin ledger view; the user-facing
+    history masks it (routes/me.py), so staff notes never reach the user.
+    Raises NoResultFound for an unknown user — callers turn that into a 404.
+    """
+    settings = get_settings()
+    if amount == 0:
+        raise DomainError(400, "zero_amount")
+    if abs(amount) > settings.admin_adjust_max_coins:
+        raise DomainError(400, "adjustment_too_large")
+
+    user = ledger.lock_user(session, user_id)
+    try:
+        result = ledger.apply(
+            session,
+            user,
+            amount,
+            "admin_adjust",
+            idem_key=f"admin_adjust:{user_id}:{idem_key}",
+            ref=reason,
+        )
+    except ledger.InsufficientBalance:
+        raise DomainError(400, "insufficient_balance")
+
+    if result.created:
+        log_fraud_event(
+            session,
+            "admin_adjust",
+            user_id=user.id,
+            detail={"amount": amount, "reason": reason},
+        )
+    return AdjustResult(
+        applied=amount if result.created else 0,
+        balance=result.balance_after,
+        replay=not result.created,
+    )
+
+
+# ---------------------------------------------------------------------------
 # Redemptions
 
 
@@ -352,6 +407,7 @@ def approve_redemption(
     redemption = _lock_redemption(session, redemption.id)
     redemption.tremendous_order_id = order_id
     redemption.status = "sent"
+    redemption.sent_at = clock.now_utc()
     session.commit()
     return redemption
 

@@ -46,7 +46,7 @@ refund) behaves.
 ```
 POST /v1/auth/device            {device_id} -> {jwt}        (5/min/IP)
 GET  /v1/me                     balance, gold, boost_until, daily state
-GET  /v1/me/ledger              coin history (cursor-paginated, ?kind= filter)
+GET  /v1/me/ledger              coin history (opaque ?cursor=, ?kind= filter)
 GET  /v1/me/cashback            cashback credits + pending total, matures_at
 POST /v1/game/claim             {game, event, idem_key}     (writes: 30/min/user)
 POST /v1/checkin                server-clock streaks
@@ -116,9 +116,13 @@ kind/IP, top risk-scored users, per-user drilldown, ban/unban.
 Manual balance corrections go through `POST /admin/users/{id}/adjust` — the
 same ledger path as everything else (row lock + idem_key), capped at
 `ADMIN_ADJUST_MAX_COINS` per call either direction, with every real move
-logged to `fraud_events` as the audit trail. `python -m app.jobs
+logged to `fraud_events` as the audit trail. The staff-written reason is
+admin-only: the user-facing history masks `ref` for every kind that isn't
+the user's own data (game outcome, streak, redemption id), so support notes
+and network tx ids never reach the client. `python -m app.jobs
 audit-ledger` (or `POST /admin/jobs/audit-ledger`) proves
-`users.balance == SUM(ledger.amount)` and the running `balance_after` chain
-for every user; candidates from the lock-free scan are re-checked under the
-user row lock, confirmed mismatches land in `fraud_events`, and the CLI
-exits non-zero so a cron alert fires.
+`users.balance == SUM(ledger.amount)` and the full `balance_after` chain
+(every entry, not just the newest — a corrupted row buried by later writes
+still surfaces); candidates from the lock-free scan are re-checked under
+the user row lock, confirmed mismatches land in `fraud_events`, and the
+CLI exits non-zero so a cron alert fires.

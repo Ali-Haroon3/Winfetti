@@ -8,7 +8,6 @@ from sqlalchemy.orm import Session
 
 from app import clock, jobs, ledger
 from app.auth import require_admin
-from app.config import get_settings
 from app.db import get_db
 from app.fraud import log_fraud_event
 from app.models import (
@@ -27,6 +26,7 @@ from app.schemas import (
     AdminLedgerPage,
     AdminRedemptionResponse,
 )
+from app import services
 from app.services import DomainError, approve_redemption, deny_redemption
 
 router = APIRouter(
@@ -250,52 +250,27 @@ def user_ledger(
 
 
 @router.post("/users/{user_id}/adjust", response_model=AdminAdjustResponse)
-def adjust_balance(
+def adjust(
     user_id: uuid.UUID,
     body: AdminAdjustRequest,
     db: Session = Depends(get_db),
 ):
-    """Manual credit/debit for support cases — the only human credit path,
-    so it goes through the ledger like everything else: row lock, idem_key,
-    and a fraud_events row as the audit trail."""
-    settings = get_settings()
-    if body.amount == 0:
-        raise HTTPException(status_code=400, detail="zero_amount")
-    if abs(body.amount) > settings.admin_adjust_max_coins:
-        raise HTTPException(status_code=400, detail="adjustment_too_large")
-
     try:
-        user = ledger.lock_user(db, user_id)
+        result = services.adjust_balance(
+            db, user_id, body.amount, body.reason, body.idem_key
+        )
+        db.commit()
     except NoResultFound:
         db.rollback()
         raise HTTPException(status_code=404, detail="not_found")
-
-    try:
-        result = ledger.apply(
-            db,
-            user,
-            body.amount,
-            "admin_adjust",
-            idem_key=f"admin_adjust:{user_id}:{body.idem_key}",
-            ref=body.reason,
-        )
-    except ledger.InsufficientBalance:
+    except DomainError as exc:
         db.rollback()
-        raise HTTPException(status_code=400, detail="insufficient_balance")
-
-    if result.created:
-        log_fraud_event(
-            db,
-            "admin_adjust",
-            user_id=user.id,
-            detail={"amount": body.amount, "reason": body.reason},
-        )
-    db.commit()
+        raise HTTPException(status_code=exc.status_code, detail=exc.code)
     return AdminAdjustResponse(
         user_id=user_id,
-        amount=body.amount if result.created else 0,
-        balance=result.balance_after,
-        replay=not result.created,
+        amount=result.applied,
+        balance=result.balance,
+        replay=result.replay,
     )
 
 
@@ -333,17 +308,30 @@ def economy_stats(db: Session = Depends(get_db)):
         )
     ).scalar_one()
 
-    # pending holds coins; approved is committed dollars not yet shipped
-    open_count, open_coins, open_usd = db.execute(
-        select(
-            func.count(),
-            func.coalesce(func.sum(Redemption.coins), 0),
-            func.coalesce(func.sum(Redemption.usd), 0),
-        ).where(Redemption.status.in_(["pending", "approved"]))
-    ).one()
+    # The two open states are different liabilities: pending coins are
+    # refundable holds (deny gives them back), approved coins are already
+    # burned and it's the dollars that are committed (order may be in
+    # flight). Don't blend them into one number.
+    open_by_status = {
+        status: {"count": count, "coins": coins, "usd": usd}
+        for status, count, coins, usd in db.execute(
+            select(
+                Redemption.status,
+                func.count(),
+                func.coalesce(func.sum(Redemption.coins), 0),
+                func.coalesce(func.sum(Redemption.usd), 0),
+            )
+            .where(Redemption.status.in_(["pending", "approved"]))
+            .group_by(Redemption.status)
+        ).all()
+    }
+    pending = open_by_status.get("pending", {"count": 0, "coins": 0, "usd": 0})
+    approved = open_by_status.get("approved", {"count": 0, "coins": 0, "usd": 0})
+    # sent_at, not reviewed_at: approval and fulfillment can land on
+    # different days (approve commits before the external call and retries).
     sent_today_usd = db.execute(
         select(func.coalesce(func.sum(Redemption.usd), 0)).where(
-            Redemption.status == "sent", Redemption.reviewed_at >= day_start
+            Redemption.status == "sent", Redemption.sent_at >= day_start
         )
     ).scalar_one()
 
@@ -367,9 +355,15 @@ def economy_stats(db: Session = Depends(get_db)):
             "debited_total": debited_today,
         },
         "redemption_liability": {
-            "open_count": open_count,
-            "coins_held": open_coins,
-            "usd_committed": open_usd,
+            "pending": {
+                "count": pending["count"],
+                "coins_on_hold": pending["coins"],
+                "usd_if_approved": pending["usd"],
+            },
+            "approved_unsent": {
+                "count": approved["count"],
+                "usd_committed": approved["usd"],
+            },
         },
         "sent_today_usd": sent_today_usd,
     }

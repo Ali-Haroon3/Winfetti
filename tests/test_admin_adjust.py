@@ -104,7 +104,8 @@ def test_requires_admin_key(client, db):
 
 def test_adjust_does_not_consume_daily_earning_room(client, db):
     user = make_user(db)
-    _adjust(client, user.id, 500)
+    resp = _adjust(client, user.id, 500)
+    assert resp.status_code == 200 and resp.json()["balance"] == 500
     assert (
         ledger.credited_since(
             db, user.id, clock.day_start_utc(), kinds=ledger.EARNING_KINDS
