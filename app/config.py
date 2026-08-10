@@ -33,6 +33,10 @@ class Settings(BaseSettings):
     daily_game_win_cap: int = 60_000
     daily_total_credit_cap: int = 100_000
 
+    # Largest single manual adjustment (either direction). A leaked admin key
+    # can still move coins, but never mint an unbounded amount in one call.
+    admin_adjust_max_coins: int = 1_000_000
+
     # Redemption gates.
     redemption_min_account_age_days: int = 7
     redemption_min_verified_ad_receipts: int = 10

@@ -94,3 +94,58 @@ class CatalogItem(BaseModel):
     usd: Decimal
     coins: int
     label: str
+
+
+class LedgerEntryItem(BaseModel):
+    id: int
+    amount: int
+    balance_after: int
+    kind: str
+    ref: str | None
+    created_at: datetime
+
+    model_config = {"from_attributes": True}
+
+
+class LedgerPage(BaseModel):
+    entries: list[LedgerEntryItem]
+    # Pass back as ?before_id= to fetch the next (older) page; null when done.
+    next_cursor: int | None
+
+
+class AdminLedgerEntryItem(LedgerEntryItem):
+    idem_key: str
+
+
+class AdminLedgerPage(BaseModel):
+    entries: list[AdminLedgerEntryItem]
+    next_cursor: int | None
+
+
+class CashbackEntryItem(BaseModel):
+    id: int
+    network: str
+    coins: int
+    status: str
+    matures_at: datetime
+    created_at: datetime
+
+    model_config = {"from_attributes": True}
+
+
+class CashbackListResponse(BaseModel):
+    pending_coins: int
+    entries: list[CashbackEntryItem]
+
+
+class AdminAdjustRequest(BaseModel):
+    amount: int
+    reason: str = Field(min_length=3, max_length=200)
+    idem_key: str = Field(min_length=8, max_length=128)
+
+
+class AdminAdjustResponse(BaseModel):
+    user_id: uuid.UUID
+    amount: int
+    balance: int
+    replay: bool

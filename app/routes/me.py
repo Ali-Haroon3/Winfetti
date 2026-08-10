@@ -1,12 +1,20 @@
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, Query
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from app import clock, ledger, services
 from app.auth import get_current_user
 from app.config import get_settings
 from app.db import get_db
-from app.models import User
-from app.schemas import DailyState, MeResponse
+from app.models import CashbackCredit, LedgerEntry, User
+from app.schemas import (
+    CashbackEntryItem,
+    CashbackListResponse,
+    DailyState,
+    LedgerEntryItem,
+    LedgerPage,
+    MeResponse,
+)
 
 router = APIRouter(prefix="/v1", tags=["me"])
 
@@ -35,4 +43,61 @@ def me(user: User = Depends(get_current_user), db: Session = Depends(get_db)):
             checked_in_today=user.last_checkin_date == clock.today_utc(),
             happy_hour_active=services.happy_hour_active(),
         ),
+    )
+
+
+@router.get("/me/ledger", response_model=LedgerPage)
+def my_ledger(
+    limit: int = Query(default=50, ge=1, le=200),
+    before_id: int | None = Query(default=None, ge=1),
+    kind: str | None = Query(default=None, max_length=64),
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """Coin history, newest first. Cursor pagination on the ledger id keeps
+    pages stable while new entries land on top."""
+    stmt = (
+        select(LedgerEntry)
+        .where(LedgerEntry.user_id == user.id)
+        .order_by(LedgerEntry.id.desc())
+        .limit(limit)
+    )
+    if before_id is not None:
+        stmt = stmt.where(LedgerEntry.id < before_id)
+    if kind is not None:
+        stmt = stmt.where(LedgerEntry.kind == kind)
+    rows = db.execute(stmt).scalars().all()
+    return LedgerPage(
+        entries=[LedgerEntryItem.model_validate(r) for r in rows],
+        next_cursor=rows[-1].id if len(rows) == limit else None,
+    )
+
+
+@router.get("/me/cashback", response_model=CashbackListResponse)
+def my_cashback(
+    limit: int = Query(default=100, ge=1, le=200),
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """Cashback credits with their maturation dates, newest first. Pending
+    coins are not in the balance yet — they land when the return window
+    passes."""
+    rows = (
+        db.execute(
+            select(CashbackCredit)
+            .where(CashbackCredit.user_id == user.id)
+            .order_by(CashbackCredit.id.desc())
+            .limit(limit)
+        )
+        .scalars()
+        .all()
+    )
+    pending = db.execute(
+        select(func.coalesce(func.sum(CashbackCredit.coins), 0)).where(
+            CashbackCredit.user_id == user.id, CashbackCredit.status == "pending"
+        )
+    ).scalar_one()
+    return CashbackListResponse(
+        pending_coins=pending,
+        entries=[CashbackEntryItem.model_validate(r) for r in rows],
     )

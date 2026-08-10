@@ -46,6 +46,8 @@ refund) behaves.
 ```
 POST /v1/auth/device            {device_id} -> {jwt}        (5/min/IP)
 GET  /v1/me                     balance, gold, boost_until, daily state
+GET  /v1/me/ledger              coin history (cursor-paginated, ?kind= filter)
+GET  /v1/me/cashback            cashback credits + pending total, matures_at
 POST /v1/game/claim             {game, event, idem_key}     (writes: 30/min/user)
 POST /v1/checkin                server-clock streaks
 POST /v1/me/email               {email} -> verification email (token, 24h TTL)
@@ -61,7 +63,11 @@ GET  /admin/redemptions?status=pending          (X-Admin-Key header)
 POST /admin/redemptions/{id}/approve  /deny
 GET  /admin/fraud/events        GET /admin/fraud/summary
 GET  /admin/users/{id}          POST /admin/users/{id}/status {active|banned}
+GET  /admin/users/{id}/ledger   full audit view (idem keys included)
+POST /admin/users/{id}/adjust   {amount, reason, idem_key}  manual credit path
+GET  /admin/stats/economy       coin liability, redemption dollars, daily flow
 POST /admin/jobs/mature-cashback
+POST /admin/jobs/audit-ledger   prove users.balance against the ledger
 ```
 
 Redemption gates: verified email, account ≥ 7 days old, ≥ 10 verified ad
@@ -106,3 +112,13 @@ emails go through the `EmailSender` seam in `app/emailer.py` — wire a real
 provider there (the default just logs). Set `SENTRY_DSN` to enable Sentry.
 The fraud dashboard is JSON-only for now: recent events, counts by
 kind/IP, top risk-scored users, per-user drilldown, ban/unban.
+
+Manual balance corrections go through `POST /admin/users/{id}/adjust` — the
+same ledger path as everything else (row lock + idem_key), capped at
+`ADMIN_ADJUST_MAX_COINS` per call either direction, with every real move
+logged to `fraud_events` as the audit trail. `python -m app.jobs
+audit-ledger` (or `POST /admin/jobs/audit-ledger`) proves
+`users.balance == SUM(ledger.amount)` and the running `balance_after` chain
+for every user; candidates from the lock-free scan are re-checked under the
+user row lock, confirmed mismatches land in `fraud_events`, and the CLI
+exits non-zero so a cron alert fires.
