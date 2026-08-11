@@ -1,8 +1,9 @@
 """The maintained balance column must always be provable from the ledger;
-the audit job is that proof."""
+the audit job is that proof — sum AND full balance_after chain."""
 
 from sqlalchemy import func, select, update
 
+from app import ledger
 from app.jobs import audit_ledger
 from app.models import FraudEvent, LedgerEntry, User
 from tests.conftest import ADMIN_HEADERS, make_user
@@ -30,6 +31,7 @@ def test_corrupted_balance_detected(db):
             "balance": 1500,
             "ledger_sum": 1000,
             "last_balance_after": 1000,
+            "chain_break_entry_ids": [],
         }
     ]
     assert (
@@ -43,11 +45,14 @@ def test_corrupted_balance_detected(db):
 
 
 def test_broken_running_balance_detected(db):
-    # balance still equals the sum, but the running balance_after chain lies
+    # balance still equals the sum, but the balance_after chain lies
     user = make_user(db, balance=1000)
+    entry_id = db.execute(
+        select(LedgerEntry.id).where(LedgerEntry.user_id == user.id)
+    ).scalar_one()
     db.execute(
         update(LedgerEntry)
-        .where(LedgerEntry.user_id == user.id)
+        .where(LedgerEntry.id == entry_id)
         .values(balance_after=999)
     )
     db.commit()
@@ -57,6 +62,39 @@ def test_broken_running_balance_detected(db):
     assert mismatch["balance"] == 1000
     assert mismatch["ledger_sum"] == 1000
     assert mismatch["last_balance_after"] == 999
+    assert mismatch["chain_break_entry_ids"] == [entry_id]
+
+
+def test_interior_corruption_survives_later_writes(db):
+    """ledger.apply computes balance_after from users.balance, so a
+    legitimate write after a corruption 'rebases' the tail and hides the bad
+    row from any newest-entry check. The full chain walk must still find it."""
+    user = make_user(db, balance=1000)
+    ledger.apply_by_id(db, user.id, 100, "checkin", idem_key=f"audit-mid:{user.id}")
+    db.commit()
+
+    middle_id = db.execute(
+        select(func.max(LedgerEntry.id)).where(LedgerEntry.user_id == user.id)
+    ).scalar_one()
+    db.execute(
+        update(LedgerEntry)
+        .where(LedgerEntry.id == middle_id)
+        .values(balance_after=1099)  # should be 1100
+    )
+    db.commit()
+
+    # a later legitimate write buries the corrupt row in the interior
+    ledger.apply_by_id(db, user.id, 50, "game_win", idem_key=f"audit-tail:{user.id}")
+    db.commit()
+
+    # sum matches balance (1150) and the newest entry agrees — only the
+    # chain walk can see the lie
+    report = audit_ledger()
+    (mismatch,) = report["mismatches"]
+    assert mismatch["user_id"] == str(user.id)
+    assert mismatch["balance"] == 1150
+    assert mismatch["ledger_sum"] == 1150
+    assert mismatch["chain_break_entry_ids"] != []
 
 
 def test_admin_endpoint_runs_audit(client, db):

@@ -100,6 +100,10 @@ class Redemption(Base):
         DateTime(timezone=True), nullable=False, server_default=func.now()
     )
     reviewed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    # When the fulfillment order actually went out. reviewed_at is the
+    # approval decision; the two can land on different days (the approve
+    # flow deliberately commits before the external call and retries later).
+    sent_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
 
 class AdReceipt(Base):

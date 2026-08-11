@@ -71,13 +71,23 @@ def mature_cashback(session_factory=SessionLocal) -> int:
 
 def audit_ledger(session_factory=SessionLocal) -> dict:
     """Prove the maintained balance column against the append-only ledger:
-    for every user, users.balance == SUM(ledger.amount) and the newest
-    entry's balance_after agrees.
+    for every user, users.balance == SUM(ledger.amount) and every entry's
+    balance_after == previous balance_after + amount (base 0).
 
-    Pass 1 scans without locks, so a claim landing between reads can throw
-    false positives; every candidate is therefore re-checked under the user
-    row lock — the lock every writer holds — before being reported. Confirmed
-    mismatches are logged to fraud_events as ledger_integrity_mismatch.
+    Per-user id order IS chain order: writes for one user serialize under
+    the row lock, so a later entry always gets a larger id. Checking the
+    whole chain (not just the newest entry) matters because ledger.apply
+    computes balance_after from users.balance — a later legitimate write
+    "rebases" onto the balance column, so a corrupted row can sink into the
+    interior of the chain, where only a full walk finds it. Both invariants
+    are permanent for committed rows: a legitimate write can neither create
+    nor heal a violation, so nothing a concurrent writer does can mask
+    corruption from the next run.
+
+    Pass 1 scans without locks, so a claim landing mid-scan can throw false
+    positives; every candidate is re-checked under the user row lock — the
+    lock every writer holds — before being reported. Confirmed mismatches
+    are logged to fraud_events as ledger_integrity_mismatch.
     """
     with session_factory() as session:
         checked = session.execute(
@@ -95,49 +105,46 @@ def audit_ledger(session_factory=SessionLocal) -> dict:
             .scalars()
             .all()
         )
-        newest = (
-            select(
-                LedgerEntry.user_id,
-                LedgerEntry.balance_after,
-                func.row_number()
-                .over(
-                    partition_by=LedgerEntry.user_id,
-                    order_by=LedgerEntry.id.desc(),
-                )
-                .label("rn"),
-            )
+        chain = select(
+            LedgerEntry.user_id.label("user_id"),
+            (LedgerEntry.balance_after - LedgerEntry.amount).label("expected_prev"),
+            func.lag(LedgerEntry.balance_after)
+            .over(partition_by=LedgerEntry.user_id, order_by=LedgerEntry.id)
+            .label("prev_after"),
         ).subquery()
-        tail_mismatch = (
+        chain_mismatch = (
             session.execute(
-                select(User.id)
-                .join(newest, newest.c.user_id == User.id)
-                .where(newest.c.rn == 1, newest.c.balance_after != User.balance)
+                select(chain.c.user_id)
+                .where(chain.c.expected_prev != func.coalesce(chain.c.prev_after, 0))
+                .distinct()
             )
             .scalars()
             .all()
         )
 
     mismatches = []
-    for user_id in sorted(set(sum_mismatch) | set(tail_mismatch)):
+    for user_id in sorted(set(sum_mismatch) | set(chain_mismatch)):
         with session_factory() as session:
             user = ledger.lock_user(session, user_id)
-            ledger_sum = session.execute(
-                select(func.coalesce(func.sum(LedgerEntry.amount), 0)).where(
-                    LedgerEntry.user_id == user_id
-                )
-            ).scalar_one()
-            tail = session.execute(
-                select(LedgerEntry.balance_after)
+            rows = session.execute(
+                select(LedgerEntry.id, LedgerEntry.amount, LedgerEntry.balance_after)
                 .where(LedgerEntry.user_id == user_id)
-                .order_by(LedgerEntry.id.desc())
-                .limit(1)
-            ).scalar_one_or_none()
-            if user.balance == ledger_sum and (tail is None or tail == user.balance):
+                .order_by(LedgerEntry.id)
+            ).all()
+            ledger_sum = sum(r.amount for r in rows)
+            prev = 0
+            break_ids = []
+            for r in rows:
+                if r.balance_after != prev + r.amount:
+                    break_ids.append(r.id)
+                prev = r.balance_after
+            if user.balance == ledger_sum and not break_ids:
                 continue  # pass-1 caught a mid-write snapshot; consistent under the lock
             detail = {
                 "balance": user.balance,
                 "ledger_sum": ledger_sum,
-                "last_balance_after": tail,
+                "last_balance_after": rows[-1].balance_after if rows else None,
+                "chain_break_entry_ids": break_ids[:10],
             }
             log_fraud_event(
                 session, "ledger_integrity_mismatch", user_id=user_id, detail=detail

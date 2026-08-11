@@ -87,6 +87,7 @@ class RedemptionResponse(BaseModel):
 class AdminRedemptionResponse(RedemptionResponse):
     user_id: uuid.UUID
     tremendous_order_id: str | None
+    sent_at: datetime | None = None
 
 
 class CatalogItem(BaseModel):
@@ -96,8 +97,10 @@ class CatalogItem(BaseModel):
     label: str
 
 
+# No raw ledger id here: it's a global sequence, and exposing it would let
+# any user infer platform-wide write volume. Pagination rides the opaque
+# next_cursor instead (app/cursor.py).
 class LedgerEntryItem(BaseModel):
-    id: int
     amount: int
     balance_after: int
     kind: str
@@ -109,11 +112,13 @@ class LedgerEntryItem(BaseModel):
 
 class LedgerPage(BaseModel):
     entries: list[LedgerEntryItem]
-    # Pass back as ?before_id= to fetch the next (older) page; null when done.
-    next_cursor: int | None
+    # Opaque token — pass back as ?cursor= to fetch the next (older) page;
+    # null when done.
+    next_cursor: str | None
 
 
 class AdminLedgerEntryItem(LedgerEntryItem):
+    id: int
     idem_key: str
 
 
@@ -123,7 +128,6 @@ class AdminLedgerPage(BaseModel):
 
 
 class CashbackEntryItem(BaseModel):
-    id: int
     network: str
     coins: int
     status: str

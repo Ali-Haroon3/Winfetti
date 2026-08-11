@@ -1,10 +1,11 @@
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from app import clock, ledger, services
 from app.auth import get_current_user
 from app.config import get_settings
+from app.cursor import decode_cursor, encode_cursor
 from app.db import get_db
 from app.models import CashbackCredit, LedgerEntry, User
 from app.schemas import (
@@ -46,16 +47,29 @@ def me(user: User = Depends(get_current_user), db: Session = Depends(get_db)):
     )
 
 
+# Kinds whose ref is the user's own data (game outcome, streak day, their
+# redemption id). Everything else — admin notes, ad/offer/cashback network
+# tx ids — is internal and never leaves the server through this endpoint.
+USER_VISIBLE_REF_KINDS = {"game_win", "checkin", "redemption_hold", "redemption_refund"}
+
+
 @router.get("/me/ledger", response_model=LedgerPage)
 def my_ledger(
     limit: int = Query(default=50, ge=1, le=200),
-    before_id: int | None = Query(default=None, ge=1),
+    cursor: str | None = Query(default=None, max_length=256),
     kind: str | None = Query(default=None, max_length=64),
     user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
-    """Coin history, newest first. Cursor pagination on the ledger id keeps
-    pages stable while new entries land on top."""
+    """Coin history, newest first. The cursor keeps pages stable while new
+    entries land on top; it's opaque so the global ledger sequence stays
+    server-side."""
+    before_id = None
+    if cursor is not None:
+        before_id = decode_cursor(cursor)
+        if before_id is None:
+            raise HTTPException(status_code=400, detail="invalid_cursor")
+
     stmt = (
         select(LedgerEntry)
         .where(LedgerEntry.user_id == user.id)
@@ -68,8 +82,17 @@ def my_ledger(
         stmt = stmt.where(LedgerEntry.kind == kind)
     rows = db.execute(stmt).scalars().all()
     return LedgerPage(
-        entries=[LedgerEntryItem.model_validate(r) for r in rows],
-        next_cursor=rows[-1].id if len(rows) == limit else None,
+        entries=[
+            LedgerEntryItem(
+                amount=r.amount,
+                balance_after=r.balance_after,
+                kind=r.kind,
+                ref=r.ref if r.kind in USER_VISIBLE_REF_KINDS else None,
+                created_at=r.created_at,
+            )
+            for r in rows
+        ],
+        next_cursor=encode_cursor(rows[-1].id) if len(rows) == limit else None,
     )
 
 
